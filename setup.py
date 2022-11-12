@@ -47,6 +47,7 @@ INSTALL_REQUIRES = [
     "yappi~=1.3.3",
     "zeroconf==0.30.0",
     "pillow>=8.4.0",
+    "packaging",
     # Conditional Requirement
     # We need pywin32 for Windows
     'pywin32>=302; platform_system == "Windows"',
