@@ -1,3 +1,4 @@
+from ledfx.consts import CONFIGURATION_VERSION
 import datetime
 import json
 import logging
@@ -6,9 +7,16 @@ import shutil
 import sys
 
 import voluptuous as vol
-from pkg_resources import parse_version
+#from pkg_resources import parse_version
+import packaging.version
 
-from ledfx.consts import CONFIGURATION_VERSION
+
+def parse_version(v):
+    try:
+        return packaging.version.Version(v)
+    except packaging.version.InvalidVersion:
+        return packaging.version.LegacyVersion(v)
+
 
 CONFIG_DIRECTORY = ".ledfx"
 CONFIG_FILE_NAME = "config.json"
