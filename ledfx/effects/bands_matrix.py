@@ -6,7 +6,6 @@ from ledfx.effects.gradient import GradientEffect
 
 
 class BandsMatrixAudioEffect(AudioReactiveEffect, GradientEffect):
-
     NAME = "Bands Matrix"
     CATEGORY = "2D"
 
@@ -25,6 +24,11 @@ class BandsMatrixAudioEffect(AudioReactiveEffect, GradientEffect):
                 description="Flip Gradient",
                 default=False,
             ): bool,
+            vol.Optional(
+                "flip_horizontal",
+                description="Flip horizontally",
+                default=False,
+            ): bool,
         }
     )
 
@@ -35,16 +39,18 @@ class BandsMatrixAudioEffect(AudioReactiveEffect, GradientEffect):
         # Create the filters used for the effect
         self.bkg_color = np.array((0, 0, 0), dtype=float)
         self.flip_gradient = config["flip_gradient"]
+        self.flip_horizontal = config["flip_horizontal"]
 
     def audio_data_updated(self, data):
         # Grab the filtered melbank
         self.r = self.melbank(filtered=True, size=self.pixel_count)
 
     def render(self):
+        bands_active = min(self._config["band_count"], self.pixel_count)
         out = np.tile(self.r, (3, 1)).T
         np.clip(out, 0, 1, out=out)
-        out_split = np.array_split(out, self._config["band_count"], axis=0)
-        for i in range(self._config["band_count"]):
+        out_split = np.array_split(out, bands_active, axis=0)
+        for i in range(bands_active):
             band_width = len(out_split[i])
             volume = int(out_split[i].max() * band_width)
             out_split[i][volume:] = self.bkg_color
@@ -59,4 +65,8 @@ class BandsMatrixAudioEffect(AudioReactiveEffect, GradientEffect):
             if i % 2 != 0:
                 out_split[i] = np.flip(out_split[i], axis=0)
 
+        if self.flip_horizontal:
+            out_split = np.flip(out_split, axis=0)
+
         self.pixels = np.vstack(out_split)
+        self.roll_gradient()

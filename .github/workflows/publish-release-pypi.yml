@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code from GitHub
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Setup sentry config
         shell: bash
         env:
@@ -27,7 +27,7 @@ jobs:
         run: |
           sed -i 's,DSN,'"$SENTRY_DSN"',' ./ledfx/sentry_config.py
       - name: Set up Python ${{ env.DEFAULT_PYTHON }}
-        uses: actions/setup-python@v2.2.1
+        uses: actions/setup-python@v4
         with:
           python-version: ${{ env.DEFAULT_PYTHON }}
       - name: Install build dependencies
@@ -40,7 +40,15 @@ jobs:
           python setup.py sdist bdist_wheel
       - name: Publish distribution to PyPI
         # if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-        uses: pypa/gh-action-pypi-publish@master
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
+      # - name: Trigger HomeAssistant Add-on
+      #   uses: benc-uk/workflow-dispatch@v1
+      #   with:
+      #     workflow: Builder
+      #     repo: YeonV/home-assistant-addons
+      #     ref: refs/heads/master
+      #     token: ${{ secrets.LEDFX_HOMEASSISTANT_ADDON }}
+      #     inputs: '{ "version": "${{ github.ref_name }}" }'

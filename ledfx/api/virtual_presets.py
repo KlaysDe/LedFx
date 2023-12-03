@@ -11,7 +11,6 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class VirtualPresetsEndpoint(RestEndpoint):
-
     ENDPOINT_PATH = "/api/virtuals/{virtual_id}/presets"
 
     async def get(self, virtual_id) -> web.Response:
@@ -54,6 +53,27 @@ class VirtualPresetsEndpoint(RestEndpoint):
         }
 
         return web.json_response(data=response, status=200)
+
+    def update_effect_config(self, virtual_id, effect):
+        # Store as both the active effect to protect existing code, and one of effects
+        virtual = next(
+            (
+                item
+                for item in self._ledfx.config["virtuals"]
+                if item["id"] == virtual_id
+            ),
+            None,
+        )
+        if virtual:
+            if not ("effects" in virtual):
+                virtual["effects"] = {}
+            virtual["effects"][effect.type] = {}
+            virtual["effects"][effect.type]["type"] = effect.type
+            virtual["effects"][effect.type]["config"] = effect.config
+            if not ("effect" in virtual):
+                virtual["effect"] = {}
+            virtual["effect"]["type"] = effect.type
+            virtual["effect"]["config"] = effect.config
 
     async def put(self, virtual_id, request) -> web.Response:
         """Set active effect of virtual to a preset"""
@@ -142,14 +162,8 @@ class VirtualPresetsEndpoint(RestEndpoint):
             }
             return web.json_response(data=response, status=202)
 
-        # Update and save the configuration
-        for virtual in self._ledfx.config["virtuals"]:
-            if virtual["id"] == virtual_id:
-                # if not ('effect' in virtual):
-                virtual["effect"] = {}
-                virtual["effect"]["type"] = effect_id
-                virtual["effect"]["config"] = effect_config
-                break
+        self.update_effect_config(virtual_id, effect)
+
         save_config(
             config=self._ledfx.config,
             config_dir=self._ledfx.config_dir,

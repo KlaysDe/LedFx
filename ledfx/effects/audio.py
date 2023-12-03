@@ -24,7 +24,6 @@ MAX_MIDI = 108
 
 
 class AudioInputSource:
-
     _is_activated = False
     _audio = None
     _stream = None
@@ -33,6 +32,7 @@ class AudioInputSource:
     _processed_audio_sample = None
     _volume = -90
     _volume_filter = ExpFilter(-90, alpha_decay=0.99, alpha_rise=0.99)
+    _subscriber_threshold = 0
 
     @staticmethod
     def device_index_validator(val):
@@ -53,7 +53,25 @@ class AudioInputSource:
 
     @staticmethod
     def default_device_index():
-        return sd.default.device[0]
+        """
+        Finds the WASAPI loopback device index of the default output device if it exists
+        If it does not exist, return the default input device index
+        Returns:
+            integer: the sounddevice device index to use for audio input
+        """
+        device_list = sd.query_devices()
+        default_output_device = sd.default.device["output"]
+        # target device should be the name of the default_output device plus " [Loopback]"
+        target_device = (
+            f"{device_list[default_output_device]['name']} [Loopback]"
+        )
+        # We need to run over the device list looking for the target device
+        for device_index, device in enumerate(device_list):
+            if device["name"] == target_device:
+                # Return the loopback device index
+                return device_index
+        # No Loopback device matching output found - return the default input device index
+        return sd.default.device["input"]
 
     @staticmethod
     def query_hostapis():
@@ -142,12 +160,11 @@ class AudioInputSource:
             )
 
     def activate(self):
-
         if self._audio is None:
             try:
                 self._audio = sd
             except OSError as Error:
-                _LOGGER.critical(f"Error: {Error}. Shutting down.")
+                _LOGGER.critical(f"Sounddevice error: {Error}. Shutting down.")
                 self._ledfx.stop()
 
         # Enumerate all of the input devices and find the one matching the
@@ -301,7 +318,7 @@ class AudioInputSource:
         """Registers a callback with the input source"""
         self._callbacks.append(callback)
 
-        if len(self._callbacks) == 1:
+        if len(self._callbacks) > 0 and not self._is_activated:
             self.activate()
 
     def unsubscribe(self, callback):
@@ -309,7 +326,7 @@ class AudioInputSource:
         if callback in self._callbacks:
             self._callbacks.remove(callback)
 
-        if len(self._callbacks) == 0:
+        if len(self._callbacks) <= self._subscriber_threshold:
             self.deactivate()
 
     def get_device_index_by_name(self, device_name: str):
@@ -422,7 +439,6 @@ class AudioInputSource:
 
 
 class AudioAnalysisSource(AudioInputSource):
-
     CONFIG_SCHEMA = vol.Schema(
         {
             vol.Optional("pitch_method", default="default"): str,
@@ -454,6 +470,9 @@ class AudioAnalysisSource(AudioInputSource):
         self.subscribe(self.bar_oscillator)
         self.subscribe(self.volume_beat_now)
         self.subscribe(self.freq_power)
+
+        # ensure any new analysis callbacks are above this line
+        self._subscriber_threshold = len(self._callbacks)
 
     def initialise_analysis(self):
         # melbanks
@@ -757,8 +776,10 @@ class AudioReactiveEffect(Effect):
 
     def _audio_data_updated(self):
         self.melbank.cache_clear()
+        self.lock.acquire()
         if self.is_active:
             self.audio_data_updated(self.audio)
+        self.lock.release()
 
     def audio_data_updated(self, data):
         """

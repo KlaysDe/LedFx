@@ -183,6 +183,135 @@ Modifies the information pertaining to the device and returns the new device as 
 
 Deletes a device with the matching *device_id*
 
+/api/find_devices
+=========================
+
+Find and add all WLED devices on the LAN.
+
+.. rubric:: POST
+
+For unregisted WLED devices, reads config direct from WLED remote device
+Will default the remote protocol to DDP, unless WLED device build is prior to DDP support, in which case it will default to UDP
+If device name has not been over ridden in WLED itself, then name will be generated from WLED-<6 digits of MAC Address>
+Additionally ledfx virtuals will be created for all virtuals defined on the WLED device itself
+
+Returns success as this is only a trigger action, device registration is handled by the back end
+
+/api/find_launchpad
+=========================
+
+.. rubric:: GET
+
+Returns the name of the first Launchpad device discovered on the system
+
+example:
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "device": "Launchpad X"
+    }
+
+if no device is found will return an error
+
+.. code-block:: json
+
+    {
+        "status": "error",
+        "error": "Failed to find launchpad"
+    }
+
+/api/find_openrgb/?server=1.2.3.4&port=5678
+===========================================
+
+.. rubric:: GET
+
+Optional Query parameters are supported as follows:
+
+'**server**' (optional): IP address of openRGB server, a default value of loacl host will be used
+'**port**' (optional): Port to be used for openRGB server. a default value of 6742 will be used
+
+In most cases these do not need to be defined as defaults of localhost and 6742 are used
+
+Returns all found openRGB devices registered with the openRGB server
+
+example:
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "devices": [
+            {
+                "name": "ASRock Z370 Gaming K6",
+                "type": 0,
+                "id": 0,
+                "leds": 1
+            },
+            {
+                "name": "ASUS ROG STRIX 3080 O10G V2 WHITE",
+                "type": 2,
+                "id": 1,
+                "leds": 22
+            },
+            {
+                "name": "Razer Deathadder V2",
+                "type": 6,
+                "id": 2,
+                "leds": 2
+            }
+        ]
+    }
+
+if no devices are found an empty array will be returned
+
+example:
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "devices": []
+    }
+
+if the openRGB server is not found an error will be returned
+
+example:
+
+.. code-block:: json
+
+    {
+        "status": "error",
+        "error": "timed out"
+    }
+
+/api/get_nanoleaf_token
+=========================
+
+.. rubric:: POST
+
+REST end-point for requesting auth token from Nanoleaf.
+Ensure that the Nanoleaf controller is in pairing mode.
+Long press the power button on the controller for 5-7 seconds.
+White LEDs will scan back and forth to indicate pairing mode.
+
+Returns the auth token as a string
+
+.. code-block:: json
+
+    {
+        "auth_token":"N7knmECvfRjoBlahBlah1Gsn5K5HcxHy"
+    }
+
+If the Nanoleaf controller is present but not in pairing mode will return an error message
+
+.. code-block:: json
+
+    {
+        "error":"{ip}:{port}: Ensure Nanoleaf controller is in pairing mode"
+    }
+
 /api/effects
 =========================
 
@@ -351,6 +480,227 @@ Save configuration of virtual's active effect as a custom preset for that effect
 
 Clear effect of a virtual
 
+/api/virtuals_tools
+===================
+
+Extensible support for general tools towards ALL virtuals in one call
+
+.. rubric:: PUT
+
+Supports tool instances of currently only force_color and oneshot, others may be added in the future
+
+**force_color**
+
+Move all pixels in a virtual to specific color, will be overwritten by active effect
+Use during configuration / calibration
+
+.. code-block:: json
+
+    {
+      "tool": "force_color",
+      "color": "blue"
+    }
+
+.. code-block:: json
+
+    {
+      "tool": "force_color",
+      "color": "#FFFFFF"
+    }
+
+returns
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "tool": "force_color"
+    }
+
+**oneshot**
+
+| Fill all active virtuals with a single color in a defined envelope of timing
+| Intended to allow integration of instantaneous game effects over all active virtual
+| Repeated oneshot will overwrite the previous oneshot if has not finished
+
+| color: The color to which we wish to fill the virtual, any format supported
+| ramp: The time in ms over which to ramp the color from zero to full weight over the active effect
+| hold: The time in ms to hold the color to full weight over the active effect
+| fade: The time in ms to fade the color from full weight to zero over the active effect
+
+At least one of ramp, hold or fade must be specified
+
+.. code-block:: json
+
+    {
+        "tool":"oneshot",
+        "color":"white",
+        "ramp":10,
+        "hold":200,
+        "fade":2000
+    }
+
+returns
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "tool": "oneshot"
+    }
+
+/api/virtuals_tools/<virtual_id>
+=================================
+
+Extensible support for general tools towards a specified virtual
+
+.. rubric:: PUT
+
+Supports tool instances of force_color, calibration, highlight and oneshot others may be added in the future
+
+**force_color**
+
+Move all pixels in a virtual to specific color, will be overwritten by active effect
+Use during configuration / calibration
+
+.. code-block:: json
+
+    {
+      "tool": "force_color",
+      "color": "blue"
+    }
+
+.. code-block:: json
+
+    {
+      "tool": "force_color",
+      "color": "#FFFFFF"
+    }
+
+returns
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "tool": "force_color"
+    }
+
+**calibration**
+
+| Force virtual into calibration mode
+| All segments will be switched to solid color rotation of RGBCMY on the final devices
+| Device backgrounds will be set to black
+| Changes to virtual segments in edit virtual will be displayed on browser second tab if open on devices view and physical devices live
+| Setting is not persistant. Shutting down ledfx while in calibration mode will leave virtual in normal effect settings in next cycle
+
+Enter calibration mode with
+
+.. code-block:: json
+
+    {
+      "tool": "calibration",
+      "mode": "on"
+    }
+
+Exit calibration mode with
+
+.. code-block:: json
+
+    {
+      "tool": "calibration",
+      "mode": "off"
+    }
+
+returns
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "tool": "calibration"
+    }
+
+**highlight**
+
+| Highlight a segment of a virtual with white, use for editing of virtual segmentations in calibration mode
+| Intended to highlight the last edited segment, or last reordered segment
+
+| state: defaults to true, explicity send False to turn off highlight
+| device: device id of the device which the segment is to be highlighted on, forced to lower case
+| start: index of led start on device for highlight
+| stop: index of led stop on device for highlight
+| flip: render order inversion, default to false
+
+.. code-block:: json
+
+    {
+      "tool": "highlight",
+      "device": "falcon1",
+      "start": 2019,
+      "stop": 2451,
+      "flip": true
+    }
+
+Disable highlight
+
+.. code-block:: json
+
+    {
+      "tool": "highlight",
+      "state": false
+    }
+
+returns
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "tool": "highlight"
+    }
+
+**oneshot**
+
+| Fill the specified virtual with a single color in a defined envelope of timing
+| Intended to allow integration of instantaneous game effects over any active virtual
+| Repeated oneshot to a virtual will overwrite the previous oneshot if has not finished
+
+| color: The color to which we wish to fill the virtual, any format supported
+| ramp: The time in ms over which to ramp the color from zero to full weight over the active effect
+| hold: The time in ms to hold the color to full weight over the active effect
+| fade: The time in ms to fade the color from full weight to zero over the active effect
+
+At least one of ramp, hold or fade must be specified
+
+.. code-block:: json
+
+    {
+        "tool":"oneshot",
+        "color":"white",
+        "ramp":10,
+        "hold":200,
+        "fade":2000
+    }
+
+returns
+
+.. code-block:: json
+
+    {
+        "status": "success",
+        "tool": "oneshot"
+    }
+
+The virtual must be active or an error will be returned
+
+.. code-block:: json
+
+    {
+        "status": "failed",
+        "reason": "virtual falcon1 is not active"
+    }
+
 /api/effects/<effect_id>/presets
 ===================================
 
@@ -385,9 +735,80 @@ Set effects and configs of all devices to those specified in a scene
 
 Save effect configuration of devices as a scene
 
+Now support default behaviour when no "virtuals" key is provided of saving all currently active virtuals to the scene in their current configuration
+
+.. code-block:: json
+
+    {
+        "name": "test1",
+        "scene_image": "",
+        "scene_tags": "",
+        "scene_puturl": "",
+        "scene_payload": ""
+    }
+
+Where a "virtuals" key is provided, only the virtuals specified will be saved to the scene, using the effect type and config carried in the json payload
+
+.. collapse:: Expand for specified Virtuals Example
+
+    .. code-block:: json
+
+        {
+            "name": "test2",
+            "scene_image": "image: https://i.pinimg.com/736x/05/9c/a7/059ca7cf94a85a3e836693e84c5bf42f--red-frogs.jpg",
+            "scene_tags": "",
+            "scene_puturl": "",
+            "scene_payload": "",
+            "virtuals": {
+                "falcon1": {
+                    "type": "blade_power_plus",
+                    "config": {
+                        "background_brightness": 1,
+                        "background_color": "#000000",
+                        "blur": 2,
+                        "brightness": 1,
+                        "decay": 0.7,
+                        "flip": false,
+                        "frequency_range": "Lows (beat+bass)",
+                        "gradient": "linear-gradient(90deg, rgb(255, 0, 0) 0%, rgb(255, 120, 0) 14%, rgb(255, 200, 0) 28%, rgb(0, 255, 0) 42%, rgb(0, 199, 140) 56%, rgb(0, 0, 255) 70%, rgb(128, 0, 128) 84%, rgb(255, 0, 178) 98%)",
+                        "gradient_roll": 0,
+                        "invert_roll": false,
+                        "mirror": false,
+                        "multiplier": 0.5
+                    }
+                },
+                "big-copy": {
+                    "type": "energy",
+                    "config": {
+                        "background_brightness": 1,
+                        "background_color": "#000000",
+                        "blur": 4,
+                        "brightness": 1,
+                        "color_cycler": false,
+                        "color_high": "#0000ff",
+                        "color_lows": "#ff0000",
+                        "color_mids": "#00ff00",
+                        "flip": false,
+                        "mirror": true,
+                        "mixing_mode": "additive",
+                        "sensitivity": 0.6
+                    }
+                }
+            }
+        }
+
+|
+
 .. rubric:: DELETE
 
 Delete a scene
+
+.. code-block:: json
+
+    {
+        "id": "test2"
+    }
+
 
 /api/integrations
 ================================

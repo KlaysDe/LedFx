@@ -5,35 +5,82 @@
 /* eslint-disable global-require */
 /* eslint-disable @typescript-eslint/no-var-requires */
 const path = require('path');
+const Store = require('electron-store');
+const store = new Store();
 
 const {
   app,
   Menu,
   Tray,
-  //   Notification,
+  // Notification,
   nativeTheme,
   BrowserWindow,
   ipcMain,
   shell,
+  session
 } = require('electron');
 const isDev = require('electron-is-dev');
 // const { download } = require('electron-dl');
 const fs = require('fs');
+const crypto = require('crypto');
+const base32Encode = require('base32-encode');
+const qrcode = require('qrcode');
+
+require('events').EventEmitter.defaultMaxListeners = 15;
 
 // Conditionally include the dev tools installer to load React Dev Tools
 let installExtension;
-let REACT_DEVELOPER_TOOLS;
-let REDUX_DEVTOOLS; // NEW!
 if (isDev) {
   const devTools = require('electron-devtools-installer');
   installExtension = devTools.default;
-  REACT_DEVELOPER_TOOLS = devTools.REACT_DEVELOPER_TOOLS;
-  REDUX_DEVTOOLS = devTools.REDUX_DEVTOOLS;
 }
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling
 if (require('electron-squirrel-startup')) {
   app.quit();
+}
+
+const base32Decode = require('base32-decode')
+
+function generateHOTP(secret, counter) {
+  const decodedSecret = base32Decode(secret, 'RFC4648');
+
+  const buffer = Buffer.alloc(8);
+  for (let i = 0; i < 8; i++) {
+    buffer[7 - i] = counter & 0xff;
+    counter = counter >> 8;
+  }
+
+  // Step 1: Generate an HMAC-SHA-1 value
+  const hmac = crypto.createHmac('sha1', Buffer.from(decodedSecret));
+  hmac.update(buffer);
+  const hmacResult = hmac.digest();
+
+  // Step 2: Generate a 4-byte string (Dynamic Truncation)
+  const offset = hmacResult[hmacResult.length - 1] & 0xf;
+  const code =
+    ((hmacResult[offset] & 0x7f) << 24) |
+    ((hmacResult[offset + 1] & 0xff) << 16) |
+    ((hmacResult[offset + 2] & 0xff) << 8) |
+    (hmacResult[offset + 3] & 0xff);
+
+  // Step 3: Compute an HOTP value
+  return `${code % 10 ** 6}`.padStart(6, '0');
+}
+
+function generateTOTP(secret, window = 0) {
+  const counter = Math.floor(Date.now() / 30000);
+  return generateHOTP(secret, counter + window);
+}
+
+function verifyTOTP(token, secret, window = 1) {
+  for (let errorWindow = -window; errorWindow <= +window; errorWindow++) {
+    const totp = generateTOTP(secret, errorWindow);
+    if (token === totp) {
+      return true;
+    }
+  }
+  return false;
 }
 
 let win;
@@ -83,11 +130,21 @@ function createWindow(args = {}) {
 // const NOTIFICATION_TITLE = 'LedFx Client - by Blade';
 // const NOTIFICATION_BODY = 'Testing Notification from the Main process';
 
-// function showNotification() {
+// // function showNotification(title = NOTIFICATION_TITLE, body = NOTIFICATION_BODY) {
+// function showNotification(title = NOTIFICATION_TITLE, body = NOTIFICATION_BODY) {
 //   new Notification({
-//     title: NOTIFICATION_TITLE,
-//     body: NOTIFICATION_BODY,
-//   }).show();
+//     toastXml: `<toast>
+//        <visual>
+//          <binding template="ToastText02">
+//            <text id="1">LedFx Update available</text>
+//            <text id="2">Click the button to see more informations.</text>
+//          </binding>
+//        </visual>
+//        <actions>
+//          <action content="Goto Release" activationType="protocol" arguments="https://github.com/YeonV/LedFx-Builds/releases/latest" />
+//        </actions>
+//     </toast>`,
+//  }).show();
 // }
 
 let tray = null;
@@ -116,29 +173,29 @@ const ready = () => (
     nativeTheme.themeSource = 'dark';
     const thePath = process.env.PORTABLE_EXECUTABLE_DIR || path.resolve('.');
 
-    const integratedCore = (process.platform === 'darwin') 
+    const integratedCore = (process.platform === 'darwin')
       ? fs.existsSync(path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx_core.app'))
-      : fs.existsSync(path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx-notray.exe'))
+      : fs.existsSync(path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx/LedFx.exe'))
 
     const currentDir = fs.readdirSync(thePath)
     console.log(currentDir)
 
     if (integratedCore) {
       if (process.platform === 'darwin') {
-        subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx_core.app/Contents/MacOS/LedFx_v2')}`, []);  
+        subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx_core.app/Contents/MacOS/LedFx_v2')}`, []);
       } else {
-        subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx-notray.exe')}`, ['-p', '8888']);
+        subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx/LedFx.exe')}`, ['-p', '8888', '--no-tray']);
       }
-    } 
+    }
 
     wind = integratedCore
       ? createWindow({ additionalArguments: ['integratedCore'] })
-      : createWindow();  
+      : createWindow();
 
     require('@electron/remote/main').enable(wind.webContents);
-    
+
     if (isDev) {
-      await installExtension([REACT_DEVELOPER_TOOLS, REDUX_DEVTOOLS], {
+      await installExtension(['lmhkpmbekcpmknklioeibfkpmmfibljd', 'fmkadmapgofadopljbjfkapdkoienihi'], {
         loadExtensionOptions: { allowFileAccess: true },
         forceDownload: false,
       })
@@ -153,22 +210,21 @@ const ready = () => (
       contextMenu = Menu.buildFromTemplate([
         { label: 'Show', click: () => {
           if (process.platform === 'darwin') app.dock.show()
-          wind.show() 
-        }},
+          wind.show()        }},
         { label: 'Minimize', click: () => wind.minimize() },
         { label: 'Minimize to tray', click: () => {
           if (process.platform === 'darwin') app.dock.hide()
-          wind.hide() 
+          wind.hide()
         }},
-        //   { label: 'Test Notifiation', click: () => showNotification() },
+        // { label: 'Test Notifiation', click: () => showNotification('Update Available', 'v2.0.62') },
         { label: 'seperator', type: 'separator' },
         { label: 'Dev', click: () => wind.webContents.openDevTools() },
         { label: 'seperator', type: 'separator' },
         {
           label: 'Start core',
-          click: () => (process.platform === 'darwin') 
+          click: () => (process.platform === 'darwin')
             ? subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx_core.app/Contents/MacOS/LedFx_v2')}`, [])
-            : subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx-notray.exe')}`, ['-p', '8888'])
+            : subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx/LedFx.exe')}`, ['-p', '8888', '--no-tray'])
         },
         {
           label: 'Stop core',
@@ -190,14 +246,14 @@ const ready = () => (
       contextMenu = Menu.buildFromTemplate([
         { label: 'Show', click: () => {
           if (process.platform === 'darwin') app.dock.show()
-          wind.show() 
+          wind.show()
         }},
         { label: 'Minimize', click: () => wind.minimize() },
         { label: 'Minimize to tray', click: () => {
           if (process.platform === 'darwin') app.dock.hide()
-          wind.hide() 
+          wind.hide()
         }},
-        //   { label: 'Test Notifiation', click: () => showNotification() },
+        // { label: 'Test Notifiation', click: () => showNotification('Update Available', 'v2.0.62') },
         { label: 'seperator', type: 'separator' },
         { label: 'Dev', click: () => wind.webContents.openDevTools() },
         { label: 'seperator', type: 'separator' },
@@ -221,22 +277,79 @@ const ready = () => (
     tray.setToolTip(`LedFx Client${isDev ? ' DEV' : ''}`);
     tray.setContextMenu(contextMenu);
     tray.setIgnoreDoubleClickEvents(true);
-    tray.on('click', () => wind.show());  
+    tray.on('click', () => wind.show());
 
-    ipcMain.on('toMain', (event, parameters) => {
-      console.log(parameters);
+    wind.webContents.setWindowOpenHandler(({ url }) => {
+      if (url.includes(' https://accounts.spotify.com/authorize')) {
+        shell.openExternal(url)
+      }
+      return { action: 'allow' }
+    })
+
+    ipcMain.on('toMain', async (event, parameters) => {
+      console.log('ALL PARAMS', parameters);
+      if (parameters.command === 'verify_otp') {
+        const user = store.get('user') || {
+          username: 'FreeUser',
+          mfaEnabled: false,
+          mfaSecret: null
+        }
+        const token = parameters.token;
+        const secret = user.mfaSecret;
+        console.log('verify_otp:', user)
+        const verified = verifyTOTP(token, secret);
+        if (verified) {
+          user.mfaEnabled = true;
+          store.set('user', user);
+        }
+
+        console.log('verified_otp:', verified ,user)
+        wind.webContents.send('fromMain', ['mfa-verified', verified]);
+        return;
+      }
+      if (parameters.command === 'generate-mfa-qr') {
+        const user = store.get('user') || {
+          username: 'FreeUser',
+          mfaEnabled: false,
+          mfaSecret: null
+        };
+        console.log('generate-mfa-qr:', user)
+        // For security, we no longer show the QR code after is verified
+        if (user.mfaEnabled) return;
+
+        if (!user.mfaSecret) {
+          // generate unique secret for user
+          // this secret will be used to check the verification code sent by user
+          const buffer = crypto.randomBytes(14);
+          user.mfaSecret = base32Encode(buffer, 'RFC4648', { padding: false });
+          console.log('generated-mfa-qr', user);
+          store.set('user', user);
+        }
+        const issuer = 'Blade\'s LedFx';
+        const algorithm = 'SHA1';
+        const digits = '6';
+        const period = '30';
+        const otpType = 'totp';
+        const configUri = `otpauth://${otpType}/${issuer}:${user.username}?algorithm=${algorithm}&digits=${digits}&period=${period}&issuer=${issuer}&secret=${user.mfaSecret}`;
+
+        qrcode.toDataURL(configUri, {
+          color: { dark: '#333333FF', light: '#00000000' },
+        }).then((png=>wind.webContents.send('fromMain', ['mfa-qr-code', png])));
+
+        return;
+      }
       if (parameters === 'get-platform') {
         wind.webContents.send('fromMain', ['platform', process.platform]);
         return;
       }
-      if (parameters === 'start-core') {      
+      if (parameters === 'start-core') {
         if (integratedCore) {
           if (process.platform === 'darwin') {
             wind.webContents.send('fromMain', ['currentdir', integratedCore, fs.existsSync(path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx_core.app'))]);
-            subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx_core.app/Contents/MacOS/LedFx_v2')}`, []);  
+            subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx_core.app/Contents/MacOS/LedFx_v2')}`, []);
           } else {
-            wind.webContents.send('fromMain', ['currentdir', integratedCore, fs.existsSync(path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx-notray.exe'))]);
-            subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx-notray.exe')}`, []);
+            wind.webContents.send('fromMain', ['currentdir', integratedCore, fs.existsSync(path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx/LedFx.exe'))]);
+            subpy = require('child_process').spawn(`${path.join(path.dirname(__dirname), isDev ? 'extraResources' : '../extraResources','LedFx/LedFx.exe')}`, []);
           }
         }
         return;
@@ -254,26 +367,7 @@ const ready = () => (
         app.exit();
         return;
       }
-      // if (parameters === 'download-core') {
-      //   download(
-      //     wind,
-      //     `https://github.com/YeonV/LedFx-Frontend-v2/releases/latest/download/LedFx_core-${
-      //       app.getVersion().split('-')[1]
-      //     }--win-portable.exe`,
-      //     {
-      //       directory: thePath,
-      //       overwrite: true,
-      //       onProgress: (obj) => {
-      //         wind.webContents.send('fromMain', ['download-progress', obj]);
-      //       },
-      //     }
-      //   ).then(() => {
-      //     wind.webContents.send('fromMain', 'clear-frontend');
-      //     app.relaunch();
-      //     app.exit();
-      //   });
-      // }
-    });  
+    });
 
     wind.on('close', function(e){
       if (subpy !== null) {
@@ -295,20 +389,20 @@ if (process.platform === 'win32') {
         wind.focus()
         wind.webContents.send('fromMain', ['protocol', JSON.stringify({event, commandLine, workingDirectory})]);
       }
-    }) 
+    })
     ready()
     // Handle the protocol. In this case, we choose to show an Error Box.
     app.on('open-url', (event, url) => {
-      event.preventDefault()
+      // event.preventDefault()
       console.log(event, url)
     })
-  
+
   }
 } else {
   ready()
   // Handle the protocol. In this case, we choose to show an Error Box.
   app.on('open-url', (event, url) => {
-    event.preventDefault()
+    // event.preventDefault()
     console.log(event, url)
   })
 }

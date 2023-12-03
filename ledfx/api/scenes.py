@@ -39,7 +39,7 @@ class ScenesEndpoint(RestEndpoint):
         if scene_id is None:
             response = {
                 "status": "failed",
-                "reason": 'Required attribute "scene_id" was not provided',
+                "reason": 'Required attribute "id" was not provided',
             }
             return web.json_response(data=response, status=400)
 
@@ -92,7 +92,7 @@ class ScenesEndpoint(RestEndpoint):
         if scene_id is None:
             response = {
                 "status": "failed",
-                "reason": 'Required attribute "scene_id" was not provided',
+                "reason": 'Required attribute "id" was not provided',
             }
             return web.json_response(data=response, status=400)
 
@@ -221,6 +221,7 @@ class ScenesEndpoint(RestEndpoint):
         scene_tags = data.get("scene_tags")
         scene_puturl = data.get("scene_puturl")
         scene_payload = data.get("scene_payload")
+        scene_midiactivate = data.get("scene_midiactivate")
         scene_image = data.get("scene_image")
         if scene_image is None:
             scene_image = "Wallpaper"
@@ -240,13 +241,26 @@ class ScenesEndpoint(RestEndpoint):
         scene_config["scene_puturl"] = scene_puturl
         scene_config["scene_tags"] = scene_tags
         scene_config["scene_payload"] = scene_payload
-        for virtual in self._ledfx.virtuals.values():
-            effect = {}
-            if virtual.active_effect:
-                effect["type"] = virtual.active_effect.type
-                effect["config"] = virtual.active_effect.config
-                # effect['name'] = virtual.active_effect.name
-            scene_config["virtuals"][virtual.id] = effect
+        scene_config["scene_midiactivate"] = scene_midiactivate
+
+        if "virtuals" not in data.keys():
+            for virtual in self._ledfx.virtuals.values():
+                effect = {}
+                if virtual.active_effect:
+                    effect["type"] = virtual.active_effect.type
+                    effect["config"] = virtual.active_effect.config
+                    # effect['name'] = virtual.active_effect.name
+                scene_config["virtuals"][virtual.id] = effect
+        else:
+            virtuals = data.get("virtuals")
+
+            for virtualid in virtuals:
+                virtual = data.get("virtuals")[virtualid]
+                if bool(virtual):
+                    effect = {}
+                    effect["type"] = virtual["type"]
+                    effect["config"] = virtual["config"]
+                    scene_config["virtuals"][virtualid] = effect
 
         # Update the scene if it already exists, else create it
         self._ledfx.config["scenes"][scene_id] = scene_config
