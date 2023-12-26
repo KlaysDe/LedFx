@@ -113,6 +113,11 @@ class WLEDDevice(NetworkedDevice):
             self.subdevice.deactivate()
         super().deactivate()
 
+    async def resolve_address(self, success_callback=None):
+        await super().resolve_address(success_callback)
+        if self.subdevice is not None:
+            self.subdevice._destination = self._destination
+
     def flush(self, data):
         self.subdevice.flush(data)
 
@@ -128,17 +133,8 @@ class WLEDDevice(NetworkedDevice):
                 for seg in segments:
                     if seg["stop"] - seg["start"] > 0:
                         name = seg.get("n", f'Seg-{seg["id"]}')
-                        if seg.get("stopY", 0) > 0:
-                            name = seg.get("n", f'Matrix-{seg["id"]}')
                         rows = seg.get("stopY", 1)
-                        if rows > 1:
-                            self.sub_v(
-                                name,
-                                None,
-                                [[seg["start"], (rows * seg["stop"]) - 1]],
-                                rows,
-                            )
-                        else:
+                        if not rows > 1:
                             self.sub_v(
                                 name,
                                 None,
