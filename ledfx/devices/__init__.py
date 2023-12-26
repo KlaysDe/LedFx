@@ -11,7 +11,7 @@ import voluptuous as vol
 import zeroconf
 
 from ledfx.config import save_config
-from ledfx.events import DeviceCreatedEvent, DeviceUpdateEvent, Event
+from ledfx.events import DeviceCreatedEvent, DeviceUpdateEvent, DeviceDeleteEvent, Event
 from ledfx.utils import (
     AVAILABLE_FPS,
     WLED,
@@ -782,7 +782,7 @@ class Devices(RegistryLoader):
                 "auto_generated": virtual.auto_generated,
             }
         )
-        self._ledfx.events.fire_event(DeviceCreatedEvent(device.name))
+        self._ledfx.events.fire_event(DeviceCreatedEvent(device.name, virtual.id))
         await device.add_postamble()
 
         # Finally, save the config to file!
@@ -792,7 +792,11 @@ class Devices(RegistryLoader):
         )
 
         return device
-
+    
+    def destroy(self, id):
+        super().destroy(id)
+        self._ledfx.events.fire_event(DeviceDeleteEvent(id))
+        
     async def set_wleds_sync_mode(self, mode):
         for device in self.values():
             if (

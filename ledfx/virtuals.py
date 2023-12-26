@@ -344,7 +344,7 @@ class Virtual:
 
     def clear_effect(self):
         self.lock.acquire()
-        self._ledfx.events.fire_event(EffectClearedEvent())
+        self._ledfx.events.fire_event(EffectClearedEvent(self.id))
         self.clear_transition_effect()
 
         if (

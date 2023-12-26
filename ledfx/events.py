@@ -12,6 +12,7 @@ class Event:
     LEDFX_SHUTDOWN = "shutdown"
     DEVICE_CREATED = "device_created"
     DEVICE_UPDATE = "device_update"
+    DEVICE_DELETED = "device_deleted"
     DEVICES_UPDATED = "devices_updated"
     VIRTUAL_UPDATE = "virtual_update"
     VISUALISATION_UPDATE = "visualisation_update"
@@ -32,6 +33,11 @@ class Event:
     def to_dict(self):
         return self.__dict__
 
+class DeviceDeleteEvent(Event):
+    """Event emitted when a device gets deleted"""
+    def __init__(self, device_id: str):
+        super().__init__(Event.DEVICE_DELETED)
+        self.device_id = device_id
 
 class DeviceUpdateEvent(Event):
     """Event emitted when a device's pixels are updated"""
@@ -46,8 +52,9 @@ class DeviceUpdateEvent(Event):
 class DeviceCreatedEvent(Event):
     """Event emitted when a device is created"""
 
-    def __init__(self, device_name):
+    def __init__(self, device_name, device_id):
         self.device_name = device_name
+        self.device_id = device_id
         super().__init__(Event.DEVICE_CREATED)
 
 
@@ -137,8 +144,9 @@ class EffectSetEvent(Event):
 class EffectClearedEvent(Event):
     """Event emitted when an effect is cleared"""
 
-    def __init__(self):
+    def __init__(self, virtual_id):
         super().__init__(Event.EFFECT_CLEARED)
+        self.virtual_id = virtual_id
 
 
 class SceneActivatedEvent(Event):
