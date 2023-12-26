@@ -5,7 +5,6 @@ from ledfx.effects.temporal import TemporalEffect
 
 
 class RainbowEffect(TemporalEffect):
-
     NAME = "Rainbow"
     CATEGORY = "Non-Reactive"
 
@@ -20,6 +19,9 @@ class RainbowEffect(TemporalEffect):
     )
 
     _hue = 0.1
+
+    def on_activate(self, pixel_count):
+        pass
 
     def effect_loop(self):
         hue_delta = self._config["frequency"] / self.pixel_count

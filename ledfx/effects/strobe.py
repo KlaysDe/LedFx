@@ -5,7 +5,6 @@ from ledfx.effects.gradient import GradientEffect
 
 
 class Strobe(AudioReactiveEffect, GradientEffect):
-
     MAPPINGS = {
         "1/1 (.,. )": 1,
         "1/2 (.-. )": 2,
@@ -17,6 +16,7 @@ class Strobe(AudioReactiveEffect, GradientEffect):
 
     NAME = "BPM Strobe"
     CATEGORY = "BPM"
+    HIDDEN_KEYS = ["gradient_roll"]
 
     CONFIG_SCHEMA = vol.Schema(
         {

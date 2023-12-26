@@ -6,7 +6,6 @@ from ledfx.effects.audio import AudioReactiveEffect
 
 
 class EnergyAudioEffect(AudioReactiveEffect):
-
     NAME = "Energy"
     CATEGORY = "Classic"
 
@@ -62,6 +61,11 @@ class EnergyAudioEffect(AudioReactiveEffect):
         self.mids_idx = 0
         self.highs_idx = 0
 
+        # make sure the p_filter is flushed from prior lifecycles
+        # prevent crashes from segment edit / led count changes
+        if self._p_filter is not None:
+            self._p_filter.value = None
+
     def config_updated(self, config):
         # scale decay value between 0.1 and 0.2
         decay_sensitivity = (self._config["sensitivity"] - 0.1) * 0.7
@@ -96,11 +100,16 @@ class EnergyAudioEffect(AudioReactiveEffect):
 
     def render(self):
         if self._config["color_cycler"]:
-
             if self.beat_now:
                 # Cycle between 0,1,2 for lows, mids and highs
                 self.color_cycler = (self.color_cycler + 1) % 3
-                color = np.random.choice(tuple(self._ledfx.colors.values()))
+
+                color_raw = self._ledfx.colors.get_all(merged=False)
+                if len(color_raw[1]) > 0:  # if there are user colors, use them
+                    color_list = list(color_raw[1].values())
+                else:
+                    color_list = list(color_raw[0].values())
+                color = parse_color(np.random.choice(color_list))
 
                 if self.color_cycler == 0:
                     self.lows_color = color

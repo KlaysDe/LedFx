@@ -8,15 +8,17 @@ import os
 import pkgutil
 import re
 import socket
-import subprocess
 import sys
 import time
+import timeit
 from abc import ABC
+from collections import deque
 from collections.abc import MutableMapping
 from functools import lru_cache
 from itertools import chain
+
 # from asyncio import coroutines, ensure_future
-from subprocess import PIPE, Popen, check_output
+from subprocess import PIPE, Popen
 
 import numpy as np
 import requests
@@ -24,28 +26,64 @@ import voluptuous as vol
 
 from ledfx.config import save_config
 
+# from asyncio import coroutines, ensure_future
+
+try:
+    from itertools import cycle
+
+    from bokeh.io import output_file, show
+    from bokeh.layouts import column
+    from bokeh.models import Label
+    from bokeh.palettes import Category10
+    from bokeh.plotting import figure
+
+    from ledfx.config import get_default_config_directory
+
+    bokeh_available = True
+except ImportError:
+    bokeh_available = False
+
+
 _LOGGER = logging.getLogger(__name__)
+
+# perf_counter has high resolution on all platforms better than 1 ms
+# however on windows until 3.11 sleep is using monotonic at a low resolution
+# of approx 15.625 ms
+# other OS have monotonic same resolution as perf
+# so prior to 3.11 just default everything to monotonic and let the
+# virtuals thread sleep code deal with the speculative extra sleep for windows
+# OS changes to sleep clock high resolution for some audio sources
+# there is no programmatic inspection for what sleep is doing under the covers
+# At 3.11 onwards use the high res perf_counter everywhere as monotonic still
+# reports 15ms on a windows OS, but the sleep implementation is perf based
+
+if (
+    sys.version_info[0] == 3 and sys.version_info[1] >= 11
+) or sys.version_info[0] >= 4:
+    clock_source = "perf_counter"
+else:
+    clock_source = "monotonic"
 
 
 def calc_available_fps():
-    monotonic_res = time.get_clock_info("monotonic").resolution
+    sleep_res = time.get_clock_info(clock_source).resolution
 
-    if monotonic_res < 0.001:
-        mult = int(0.001 / monotonic_res)
+    if sleep_res < 0.001:
+        mult = int(0.001 / sleep_res)
     else:
         mult = 1
 
     max_fps_target = 126
     min_fps_target = 10
 
-    max_fps_ticks = np.ceil(
-        (1 / max_fps_target) / (monotonic_res * mult)
-    ).astype(int)
-    min_fps_ticks = np.ceil(
-        (1 / min_fps_target) / (monotonic_res * mult)
-    ).astype(int)
+    max_fps_ticks = np.ceil((1 / max_fps_target) / (sleep_res * mult)).astype(
+        int
+    )
+    min_fps_ticks = np.ceil((1 / min_fps_target) / (sleep_res * mult)).astype(
+        int
+    )
     tick_range = reversed(range(max_fps_ticks, min_fps_ticks))
-    return {int(1 / (monotonic_res * mult * i)): i * mult for i in tick_range}
+    return {int(1 / (sleep_res * mult * i)): i * mult for i in tick_range}
 
 
 AVAILABLE_FPS = calc_available_fps()
@@ -53,12 +91,12 @@ AVAILABLE_FPS = calc_available_fps()
 
 @lru_cache(maxsize=32)
 def fps_to_sleep_interval(fps):
-    monotonic_res = time.get_clock_info("monotonic").resolution
-    monotonic_ticks = next(
+    sleep_res = time.get_clock_info(clock_source).resolution
+    sleep_ticks = next(
         (t for f, t in AVAILABLE_FPS.items() if f >= fps),
         list(AVAILABLE_FPS.values())[-1],
     )
-    return max(0.001, monotonic_res * (monotonic_ticks - 1))
+    return max(0.001, sleep_res * (sleep_ticks - 1))
 
 
 def install_package(package):
@@ -146,7 +184,7 @@ def async_fire_and_return(coro, callback, timeout=10):
         exc = future.exception()
         if exc:
             # Handle wonderful empty TimeoutError exception
-            if type(exc) == TimeoutError:
+            if isinstance(exc, TimeoutError):
                 _LOGGER.warning(f"Coroutine {future} timed out.")
             else:
                 _LOGGER.error(exc)
@@ -174,13 +212,6 @@ def async_callback(loop, callback, *args):
 
     loop.call_soon(run_callback)
     return future
-
-
-def git_version():
-    """
-    Uses a subprocess to attempt to get the git revision of the running build.
-    """
-    return check_output(["git", "rev-parse", "HEAD"]).strip().decode("ascii")
 
 
 class WLED:
@@ -218,7 +249,6 @@ class WLED:
 
     @staticmethod
     async def _get_sync_settings(ip_address):
-
         response = await WLED._wled_request(
             requests.get, ip_address, "json/cfg"
         )
@@ -298,7 +328,8 @@ class WLED:
         Returns:
             dict: array of segments
         """
-        return await self.get_state()["seg"]
+        res = await self.get_state()
+        return res["seg"]
 
     async def set_power_state(self, state):
         """
@@ -517,7 +548,7 @@ async def resolve_destination(
 
 
 def currently_frozen():
-    """Checks to see if running in a frozen environment such as pyinstaller or pyupdater package
+    """Checks to see if running in a frozen environment such as pyinstaller created binaries
     Args:
         Nil
 
@@ -525,6 +556,27 @@ def currently_frozen():
         boolean
     """
     return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+
+
+def get_icon_path(icon_filename) -> str:
+    """returns fully qualified path for icon, tests for frozen
+    and logs error if does not exist
+
+    Parameters:
+        icon_filename(str): the filename of the icon to be pathed
+
+    Returns:
+            icon_location(str): fully qualified path
+    """
+    current_directory = os.path.dirname(__file__)
+
+    icon_location = os.path.normpath(
+        os.path.join(current_directory, "..", "icons", icon_filename)
+    )
+
+    if not os.path.isfile(icon_location):
+        _LOGGER.error(f"No icon found at {icon_location}")
+    return icon_location
 
 
 def generate_id(name):
@@ -884,7 +936,6 @@ class RegistryLoader:
         return obj
 
     def destroy(self, id):
-
         if id not in self._objects:
             raise AttributeError(
                 ("Object with id '{}' does not exist.").format(id)
@@ -893,3 +944,260 @@ class RegistryLoader:
 
     def get(self, *args):
         return self._objects.get(*args)
+
+
+class Plot_range:
+    def __init__(self, key, birth, points=1000):
+        self.key = key
+        self.xs = deque(maxlen=points)
+        self.ys = deque(maxlen=points)
+        self.birth = birth
+
+    def append(self, y):
+        self.xs.append(timeit.default_timer() - self.birth)
+        self.ys.append(y)
+
+    def list_x(self):
+        return list(self.xs)
+
+    def list_y(self):
+        return list(self.ys)
+
+
+class Tag:
+    def __init__(self, x, y, text, color="black"):
+        self.x = x
+        self.y = y
+        self.text = text
+        self.color = color
+
+
+class Graph:
+    """
+    Graph is a simple wrapper for bokeh to give high value multi range
+    time domain graphs with absolute minimum code
+    Supports mulitple ranges, and text tags
+
+    Lifecycle:
+        myGraph=("Animal hunt", ["Frogs", "Elephants"], y_title="Distance")
+        ...
+        myGraph.append_by_key("Frogs", 2.7)
+        myGraph.append_by_key("Elephants", 9.2)
+        ...
+        myGraph.append_by_key("Elephants", 6.0)
+        myGraph.append_tag("I am hungry", 1.0, color="red")
+
+        myGraph.dump_graph()
+    """
+
+    def __init__(
+        self,
+        title,
+        keys,
+        points=1000,
+        tags=10,
+        y_title="plumbus",
+        y_axis_max=None,
+    ):
+        """
+        Creates a graph instance, sets X axis to 0 seconds
+
+        Parameters:
+            title (str): String title to be displayed on graph
+            keys (list[(str)]: list of range titles to be display in key and available to append data values to
+            points (int): how many points to support in rolling buffer
+            tags (int): how many text tags to support in rolling buffer
+            y_title (str): Axis title for Y range
+            y_axis_max (float): If not None, will force the y axis max
+        """
+        self.title = title
+        self.y_title = y_title
+        self.y_axis_max = y_axis_max
+        self.ranges = {}
+        self.keys = keys
+        self.birth = timeit.default_timer()
+        for key in keys:
+            self.ranges[key] = Plot_range(key, self.birth, points=points)
+        self.tags = deque(maxlen=tags)
+
+    def append_by_key(self, key, value):
+        """
+        Appends a value into range ring buffer associated with axis key, timestamp is applied in second since graph creation
+
+        Parameters:
+            key (str): key name of the range, matching those used during creation to which to append
+            value (float): value which you wish to append to the range
+        """
+        self.ranges[key].append(value)
+
+    def append_tag(self, text, y, color="black"):
+        """
+        Appends a text tag into tag ring buffer, timestamp is applied in seconds since graph creation
+
+        Parameters:
+            text (str): text to be displayed as tag
+            y (float): value which you wish to display the tag
+        """
+
+        self.tags.append(
+            Tag(timeit.default_timer() - self.birth, y, text, color=color)
+        )
+
+    def dump_graph(self, sub_title=None, jitter=False, only_jitter=False):
+        """
+        Will spawn an interaction graph session into the browser
+
+        Parameters:
+            sub_title (str): Optional sub title to add to the base title
+                             Useful for when you want to know why the graph
+                             was dumped
+            jitter (bool): If true, will dump the jitter graph
+            only_jitter (bool): If true, will only dump the jitter graph
+        """
+        if not bokeh_available:
+            _LOGGER.info("Bokeh is disabled dump is disabled")
+        else:
+            if sub_title:
+                compound = f"{self.title} : {sub_title}"
+            else:
+                compound = self.title
+
+            _LOGGER.info(f"Attempting to dump graph {compound}")
+            TOOLS = "xpan,xwheel_zoom,box_zoom,reset,save,box_select"
+            colors = cycle(Category10[10])
+
+            vals_fig = figure(
+                title=compound,
+                x_axis_label="sec since start",
+                y_axis_label=self.y_title,
+                tools=TOOLS,
+                active_scroll="xwheel_zoom",
+                width=1200,
+                height=600,
+            )
+
+            for a_range in self.ranges.values():
+                if len(a_range.list_x()) > 0:
+                    vals_fig.line(
+                        a_range.list_x(),
+                        a_range.list_y(),
+                        legend_label=a_range.key,
+                        line_width=2,
+                        color=next(colors),
+                    )
+
+            for tag in self.tags:
+                label = Label(
+                    x=tag.x,
+                    y=tag.y,
+                    text=tag.text,
+                    text_font_size="12pt",
+                    text_color=tag.color,
+                    angle=1.57,
+                )
+                vals_fig.add_layout(label)
+
+            if self.y_axis_max is not None:
+                vals_fig.y_range.end = self.y_axis_max
+
+            vals_fig.legend.click_policy = "hide"
+
+            if jitter or only_jitter:
+                jitter_title = f"{compound} jitter"
+
+                jitter_fig = figure(
+                    title=jitter_title,
+                    x_axis_label="sec since start",
+                    x_range=vals_fig.x_range,
+                    y_axis_label="periodic secs",
+                    tools=TOOLS,
+                    active_scroll="xwheel_zoom",
+                    width=1200,
+                    height=600,
+                )
+
+                for a_range in self.ranges.values():
+                    # Calculte jitter for range x and prestuff so len is same
+                    # don't use numpy due to some side effects
+                    x = a_range.list_x()
+                    if len(x) > 0:
+                        jitter = [x[i + 1] - x[i] for i in range(len(x) - 1)]
+                        jitter.insert(0, 0.0)
+                        jitter_fig.circle(
+                            a_range.list_x(),
+                            jitter,
+                            legend_label=a_range.key,
+                            size=3,
+                            color=next(colors),
+                        )
+
+                for tag in self.tags:
+                    label = Label(
+                        x=tag.x,
+                        y=0.001,
+                        text=tag.text,
+                        text_font_size="12pt",
+                        text_color=tag.color,
+                        angle=1.57,
+                        text_baseline="middle",
+                    )
+
+                    jitter_fig.add_layout(label)
+
+                jitter_fig.legend.click_policy = "hide"
+
+            # work out layour according to requested graphs
+            if only_jitter:
+                p = column(jitter_fig)
+            elif jitter:
+                p = column(vals_fig, jitter_fig)
+            else:
+                p = column(vals_fig)
+
+            save_as = os.path.join(
+                get_default_config_directory(),
+                f"{re.sub('[^A-Za-z0-9]+', '_', compound)}.html",
+            )
+            output_file(filename=save_as, title=compound)
+            show(p)
+
+
+def wled_support_DDP(build) -> bool:
+    # https://github.com/Aircoookie/WLED/blob/main/CHANGELOG.md#build-2110060
+    if build >= 2110060:
+        return True
+    else:
+        return False
+
+
+def clean_ip(ip_address):
+    """Strip common error input from IP copy from chrome that is actually a URL
+
+    Args:
+        ip_address (string): The IP address to be cleaned
+
+    Returns:
+        string: The cleaned IP address
+    """
+
+    return (
+        ip_address.replace("https://", "")
+        .replace("http://", "")
+        .replace("/", "")
+    )
+
+
+name_to_icon = {}
+
+
+def set_name_to_icon(new_dict):
+    global name_to_icon
+    name_to_icon = new_dict
+
+
+def get_icon_name(wled_name):
+    global name_to_icon
+    for name, icon in name_to_icon.items():
+        if name.lower() in wled_name.lower():
+            return icon
+    return "wled"

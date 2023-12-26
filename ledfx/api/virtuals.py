@@ -5,6 +5,7 @@ from aiohttp import web
 
 from ledfx.api import RestEndpoint
 from ledfx.config import save_config
+from ledfx.effects import DummyEffect
 from ledfx.utils import generate_id
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,12 +27,16 @@ class VirtualsEndpoint(RestEndpoint):
                 "config": virtual.config,
                 "id": virtual.id,
                 "is_device": virtual.is_device,
+                "auto_generated": virtual.auto_generated,
                 "segments": virtual.segments,
                 "pixel_count": virtual.pixel_count,
                 "active": virtual.active,
                 "effect": {},
             }
-            if virtual.active_effect:
+            # TODO: protect from DummyEffect, future consider side effects
+            if virtual.active_effect and not isinstance(
+                virtual.active_effect, DummyEffect
+            ):
                 effect_response = {}
                 effect_response["config"] = virtual.active_effect.config
                 effect_response["name"] = virtual.active_effect.name
@@ -96,6 +101,19 @@ class VirtualsEndpoint(RestEndpoint):
                     item["config"] = virtual.config
                     self._ledfx.config["virtuals"][idx] = item
                     break
+            response = {
+                "status": "success",
+                "payload": {
+                    "type": "success",
+                    "reason": f"Updated Virtual {virtual.id}",
+                },
+                "virtual": {
+                    "config": virtual.config,
+                    "id": virtual.id,
+                    "is_device": virtual.is_device,
+                    "auto_generated": virtual.auto_generated,
+                },
+            }
         # Or, create new virtual if id does not exist
         else:
             virtual_id = generate_id(virtual_config.get("name"))
@@ -116,8 +134,23 @@ class VirtualsEndpoint(RestEndpoint):
                     "id": virtual.id,
                     "config": virtual.config,
                     "is_device": virtual.is_device,
+                    "auto_generated": virtual.auto_generated,
                 }
             )
+
+            response = {
+                "status": "success",
+                "payload": {
+                    "type": "success",
+                    "reason": f"Created Virtual {virtual_id}",
+                },
+                "virtual": {
+                    "config": virtual.config,
+                    "id": virtual.id,
+                    "is_device": virtual.is_device,
+                    "auto_generated": virtual.auto_generated,
+                },
+            }
 
         # Save config
         save_config(
@@ -125,12 +158,4 @@ class VirtualsEndpoint(RestEndpoint):
             config_dir=self._ledfx.config_dir,
         )
 
-        response = {
-            "status": "success",
-            "virtual": {
-                "config": virtual.config,
-                "id": virtual.id,
-                "is_device": virtual.is_device,
-            },
-        }
         return web.json_response(data=response, status=200)

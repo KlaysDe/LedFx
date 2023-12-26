@@ -11,15 +11,18 @@ import voluptuous as vol
 import zeroconf
 
 from ledfx.config import save_config
-from ledfx.events import DeviceUpdateEvent, Event
+from ledfx.events import DeviceCreatedEvent, DeviceUpdateEvent, Event
 from ledfx.utils import (
     AVAILABLE_FPS,
     WLED,
     BaseRegistry,
     RegistryLoader,
     async_fire_and_forget,
+    clean_ip,
     generate_id,
+    get_icon_name,
     resolve_destination,
+    wled_support_DDP,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -106,6 +109,7 @@ class Device(BaseRegistry):
             if virtual.is_device == self.id:
                 segments = [[self.id, 0, self.pixel_count - 1, False]]
                 virtual.update_segments(segments)
+                virtual.invalidate_cached_props()
 
         for virtual in self._virtuals_objs:
             virtual.deactivate_segments()
@@ -136,14 +140,26 @@ class Device(BaseRegistry):
             return
 
         for pixels, start, end in data:
-            self._pixels[start : end + 1] = pixels
+            # protect against an empty race condition
+            if pixels.shape[0] != 0:
+                if np.shape(pixels) == (3,) or np.shape(
+                    self._pixels[start : end + 1]
+                ) == np.shape(pixels):
+                    self._pixels[start : end + 1] = pixels
 
-        if virtual_id == self.priority_virtual.id:
-            frame = self.assemble_frame()
-            self.flush(frame)
-            # _LOGGER.debug(f"Device {self.id} flushed by Virtual {virtual_id}")
+        if self.priority_virtual:
+            if virtual_id == self.priority_virtual.id:
+                frame = self.assemble_frame()
+                self.flush(frame)
+                # _LOGGER.debug(f"Device {self.id} flushed by Virtual {virtual_id}")
 
-            self._ledfx.events.fire_event(DeviceUpdateEvent(self.id, frame))
+                self._ledfx.events.fire_event(
+                    DeviceUpdateEvent(self.id, frame)
+                )
+        else:
+            _LOGGER.warning(
+                f"Flush skipped as {self.id} has no priority_virtual"
+            )
 
     def assemble_frame(self):
         """
@@ -263,13 +279,16 @@ class Device(BaseRegistry):
         _LOGGER.debug(
             f"Device {self.id}: Added segment {virtual_id, start_pixel, end_pixel}"
         )
+        # We have added a segment, therefore the priority virtual may of changed
+        self.invalidate_cached_props()
 
     def clear_virtual_segments(self, virtual_id):
         self._segments = [
             segment for segment in self._segments if segment[0] != virtual_id
         ]
-        if virtual_id == self.priority_virtual:
-            self.invalidate_cached_props()
+        if self.priority_virtual:
+            if virtual_id == self.priority_virtual.id:
+                self.invalidate_cached_props()
 
     def clear_segments(self):
         self._segments = []
@@ -280,9 +299,11 @@ class Device(BaseRegistry):
             if hasattr(self, prop):
                 delattr(self, prop)
 
-    def remove_from_virtuals(self):
+    async def remove_from_virtuals(self):
         # delete segments for this device in any virtuals
 
+        # list of ids to destroy after iterating
+        auto_generated_virtuals_to_destroy = []
         for virtual in self._ledfx.virtuals.values():
             if not any(segment[0] == self.id for segment in virtual._segments):
                 continue
@@ -295,6 +316,22 @@ class Device(BaseRegistry):
                 for segment in virtual._segments
                 if segment[0] != self.id
             )
+            # If the virtual is auto generated and has no segments left, nuke it
+            if len(virtual._segments) == 0 and virtual.auto_generated:
+                virtual.clear_effect()
+                # cleanup this virtual from any scenes
+                ledfx_scenes = self._ledfx.config["scenes"].copy()
+                for scene_id, scene_config in ledfx_scenes.items():
+                    self._ledfx.config["scenes"][scene_id]["virtuals"] = {
+                        _virtual_id: effect
+                        for _virtual_id, effect in scene_config[
+                            "virtuals"
+                        ].items()
+                        if _virtual_id != virtual.id
+                    }
+                # add it to the list to be destroyed
+                auto_generated_virtuals_to_destroy.append(virtual.id)
+                continue
 
             # Update ledfx's config
             for idx, item in enumerate(self._ledfx.config["virtuals"]):
@@ -305,6 +342,93 @@ class Device(BaseRegistry):
 
             if active:
                 virtual.activate()
+
+        for id in auto_generated_virtuals_to_destroy:
+            virtual = self._ledfx.virtuals.get(id)
+            virtual.clear_effect()
+            device_id = virtual.is_device
+            device = self._ledfx.devices.get(device_id)
+            if device is not None:
+                await device.remove_from_virtuals()
+                self._ledfx.devices.destroy(device_id)
+
+                # Update and save the configuration
+                self._ledfx.config["devices"] = [
+                    _device
+                    for _device in self._ledfx.config["devices"]
+                    if _device["id"] != device_id
+                ]
+
+            # cleanup this virtual from any scenes
+            ledfx_scenes = self._ledfx.config["scenes"].copy()
+            for scene_id, scene_config in ledfx_scenes.items():
+                self._ledfx.config["scenes"][scene_id]["virtuals"] = {
+                    _virtual_id: effect
+                    for _virtual_id, effect in scene_config["virtuals"].items()
+                    if _virtual_id != id
+                }
+
+            self._ledfx.virtuals.destroy(id)
+
+            # Update and save the configuration
+            self._ledfx.config["virtuals"] = [
+                virtual
+                for virtual in self._ledfx.config["virtuals"]
+                if virtual["id"] != id
+            ]
+            save_config(
+                config=self._ledfx.config,
+                config_dir=self._ledfx.config_dir,
+            )
+
+    async def add_postamble(self):
+        # over ride in child classes for device specific behaviours
+        pass
+
+    def sub_v(self, name, icon, segs, rows):
+        compound_name = f"{self.name}-{name}"
+        _LOGGER.info(f"Creating a virtual for device {compound_name}")
+        virtual_id = generate_id(compound_name)
+        icon_name = get_icon_name(compound_name)
+        if icon_name == "wled" and icon is not None:
+            icon_name = icon
+        virtual_config = {
+            "name": compound_name,
+            "icon_name": icon_name,
+            "transition_time": 0,
+            "rows": rows,
+        }
+
+        segments = []
+        for seg in segs:
+            segments.append([self.id, seg[0], seg[1], False])
+
+        # Create the virtual
+        virtual = self._ledfx.virtuals.create(
+            id=virtual_id,
+            config=virtual_config,
+            ledfx=self._ledfx,
+            auto_generated=True,
+        )
+
+        # Create segment on the virtual
+        virtual.update_segments(segments)
+
+        # Update the configuration
+        self._ledfx.config["virtuals"].append(
+            {
+                "id": virtual.id,
+                "config": virtual.config,
+                "segments": virtual.segments,
+                "is_device": False,
+                "auto_generated": True,
+            }
+        )
+
+
+@BaseRegistry.no_registration
+class MidiDevice(Device):
+    pass
 
 
 @BaseRegistry.no_registration
@@ -372,7 +496,6 @@ class NetworkedDevice(Device):
 
 @BaseRegistry.no_registration
 class UDPDevice(NetworkedDevice):
-
     CONFIG_SCHEMA = vol.Schema(
         {
             vol.Required(
@@ -408,7 +531,6 @@ class AvailableCOMPorts:
 
 @BaseRegistry.no_registration
 class SerialDevice(Device):
-
     CONFIG_SCHEMA = vol.Schema(
         {
             vol.Required(
@@ -507,6 +629,7 @@ class Devices(RegistryLoader):
         """
         # First, we try to make sure this device doesn't share a destination with any existing device
         if "ip_address" in device_config.keys():
+            device_config["ip_address"] = clean_ip(device_config["ip_address"])
             device_ip = device_config["ip_address"]
             try:
                 resolved_dest = await resolve_destination(
@@ -541,6 +664,15 @@ class Devices(RegistryLoader):
                             msg = f"Ignoring {device_ip}: Shares IP and OpenRGB ID with existing device {existing_device.name}"
                             _LOGGER.info(msg)
                             raise ValueError(msg)
+                    elif device_type == "osc":
+                        # Allow multiple OSC Server devices, but not on the same path + starting_addr combination
+                        if (
+                            device_config["path"]
+                            == existing_device.config["path"]
+                            and device_config["starting_addr"]
+                            == existing_device.config["starting_addr"]
+                        ):
+                            msg = f"Ignoring {device_ip}:{device_config['port']}:{device_config['path']}/{device_config['starting_addr']}: Shares IP, Port, Universe AND starting address with existing device {existing_device.name}"
                     else:
                         msg = f"Ignoring {device_ip}: Shares destination with existing device {existing_device.name}"
                         _LOGGER.info(msg)
@@ -566,40 +698,27 @@ class Devices(RegistryLoader):
             # fmt: on
             wled_count = led_info["count"]
             wled_rgbmode = led_info["rgbw"]
+            wled_build = wled_config["vid"]
+
+            if wled_support_DDP(wled_build):
+                _LOGGER.info(f"WLED build Supports DDP: {wled_build}")
+                sync_mode = "DDP"
+            else:
+                _LOGGER.info(
+                    f"WLED build pre DDP, default to UDP: {wled_build}"
+                )
+                sync_mode = "UDP"
+
+            icon_name = get_icon_name(wled_name)
 
             wled_config = {
                 "name": wled_name,
                 "pixel_count": wled_count,
-                "icon_name": "wled",
+                "icon_name": icon_name,
                 "rgbw_led": wled_rgbmode,
+                "sync_mode": sync_mode,
             }
 
-            # determine sync mode
-            # UDP < 480
-            # DDP or E131 depending on: ledfx's configured preferred mode first, else the device's mode
-            # ARTNET can do one
-
-            if wled_count > 480:
-                await wled.get_sync_settings()
-                sync_mode = wled.get_sync_mode()
-            else:
-                sync_mode = "UDP"
-
-                # preferred_mode = self._ledfx.config["wled_preferences"][
-                #     "wled_preferred_mode"
-                # ]
-                # if preferred_mode:
-                #     sync_mode = preferred_mode
-                # else:
-                #     await wled.get_sync_settings()
-                #     sync_mode = wled.get_sync_mode()
-
-            if sync_mode == "ARTNET":
-                msg = f"Cannot add WLED device at {resolved_dest}. Unsupported mode: 'ARTNET', and too many pixels for UDP sync (>480)"
-                _LOGGER.warning(msg)
-                raise ValueError(msg)
-
-            wled_config["sync_mode"] = sync_mode
             device_config.update(wled_config)
 
         device_id = generate_id(device_config["name"])
@@ -620,12 +739,15 @@ class Devices(RegistryLoader):
         if hasattr(device, "async_initialize"):
             await device.async_initialize()
 
+        device_config = device.config
+        if device_type == "wled":
+            device_config["name"] = wled_name
         # Update and save the configuration
         self._ledfx.config["devices"].append(
             {
                 "id": device.id,
                 "type": device.type,
-                "config": device.config,
+                "config": device_config,
             }
         )
 
@@ -636,6 +758,12 @@ class Devices(RegistryLoader):
             "name": device.name,
             "icon_name": device_config["icon_name"],
         }
+
+        if device_type == "wled":
+            if "matrix" in led_info.keys():
+                if "h" in led_info["matrix"].keys():
+                    virtual_config["rows"] = led_info["matrix"]["h"]
+
         segments = [[device.id, 0, device_config["pixel_count"] - 1, False]]
 
         # Create the virtual
@@ -644,6 +772,7 @@ class Devices(RegistryLoader):
             config=virtual_config,
             ledfx=self._ledfx,
             is_device=device.id,
+            auto_generated=False,
         )
 
         # Create the device as a single segment on the virtual
@@ -656,8 +785,11 @@ class Devices(RegistryLoader):
                 "config": virtual.config,
                 "segments": virtual.segments,
                 "is_device": device.id,
+                "auto_generated": virtual.auto_generated,
             }
         )
+        self._ledfx.events.fire_event(DeviceCreatedEvent(device.name))
+        await device.add_postamble()
 
         # Finally, save the config to file!
         save_config(
@@ -719,3 +851,7 @@ class WLEDListener(zeroconf.ServiceBrowser):
                 loop=self._ledfx.loop,
                 exc_handler=handle_exception,
             )
+
+    def update_service(self, zeroconf_obj, type, name):
+        """Callback when a service is updated."""
+        pass

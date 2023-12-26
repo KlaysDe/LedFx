@@ -1,14 +1,18 @@
+import itertools
 import logging
+import sys
 import threading
 import time
+import timeit
 from functools import cached_property
 
 import numpy as np
 import voluptuous as vol
 import zeroconf
 
+from ledfx.color import parse_color
 from ledfx.effects import DummyEffect
-from ledfx.effects.math import interpolate_pixels
+from ledfx.effects.math import interpolate_pixels, make_pattern
 from ledfx.effects.melbank import (
     MAX_FREQ,
     MIN_FREQ,
@@ -31,9 +35,10 @@ from ledfx.utils import fps_to_sleep_interval
 
 _LOGGER = logging.getLogger(__name__)
 
+color_list = ["red", "green", "blue", "cyan", "magenta", "#ffff00"]
+
 
 class Virtual:
-
     CONFIG_SCHEMA = vol.Schema(
         {
             vol.Required(
@@ -99,6 +104,11 @@ class Virtual:
                     max=MAX_FREQ,
                 ),
             ),  # AND HERE TOO,
+            vol.Optional(
+                "rows",
+                description="Amount of rows. > 1 if this virtual is a matrix",
+                default=1,
+            ): int,
         }
     )
 
@@ -122,6 +132,13 @@ class Virtual:
     _active_effect = None
     _transition_effect = None
 
+    if (
+        sys.version_info[0] == 3 and sys.version_info[1] >= 11
+    ) or sys.version_info[0] >= 4:
+        _min_time = time.get_clock_info("perf_counter").resolution
+    else:
+        _min_time = time.get_clock_info("monotonic").resolution
+
     def __init__(self, ledfx, config):
         self._ledfx = ledfx
         self._config = config
@@ -129,6 +146,14 @@ class Virtual:
         # in, +ve mean fading out
         self.fade_timer = 0
         self._segments = []
+        self._calibration = False
+        self._hl_state = False
+        self._hl_device = None
+        self._hl_start = 0
+        self._hl_end = 0
+        self._hl_step = 1
+        self._os_active = False
+        self.lock = threading.Lock()
 
         self.frequency_range = FrequencyRange(
             self._config["frequency_min"], self._config["frequency_max"]
@@ -207,6 +232,7 @@ class Virtual:
                 delattr(self, prop)
 
     def update_segments(self, segments_config):
+        self.lock.acquire()
         segments_config = [list(item) for item in segments_config]
         _segments = self.SEGMENTS_SCHEMA(segments_config)
 
@@ -236,14 +262,18 @@ class Virtual:
             # eg. devices might be reordered, but total pixel count is same
             # so no need to restart the effect
             if self.pixel_count != _pixel_count:
+                # chenging segments is a deep edit, just flush any transition
+                self.clear_transition_effect()
                 self.transitions = Transitions(self.pixel_count)
                 if self._active_effect is not None:
-                    self._active_effect.deactivate()
+                    self._active_effect._deactivate()
                     if self.pixel_count > 0:
                         self._active_effect.activate(self)
 
             mode = self._config["transition_mode"]
             self.frame_transitions = self.transitions[mode]
+
+        self.lock.release()
 
     def set_preset(self, preset_info):
         category, effect_id, preset_id = preset_info
@@ -262,22 +292,30 @@ class Virtual:
         self.set_effect(effect)
 
     def set_effect(self, effect):
+        self.lock.acquire()
         if not self._devices:
             error = f"Virtual {self.id}: Cannot activate, no configured device segments"
             _LOGGER.warning(error)
             raise ValueError(error)
 
-        self.transition_frame_total = (
-            self.refresh_rate * self._config["transition_time"]
-        )
-        self.transition_frame_counter = 0
-
-        if self._active_effect is None:
-            self._transition_effect = DummyEffect(self.pixel_count)
-
-        else:
+        if (
+            self._config["transition_mode"] != "None"
+            and self._config["transition_time"] > 0
+        ):
+            self.transition_frame_total = (
+                self.refresh_rate * self._config["transition_time"]
+            )
+            self.transition_frame_counter = 0
             self.clear_transition_effect()
-            self._transition_effect = self._active_effect
+
+            if self._active_effect is None:
+                self._transition_effect = DummyEffect(self.pixel_count)
+            else:
+                self._transition_effect = self._active_effect
+        else:
+            # no transition effect to clean up, so clear the active effect now!
+            self.clear_active_effect()
+            self.clear_transition_effect()
 
         self._active_effect = effect
         self._active_effect.activate(self)
@@ -289,7 +327,7 @@ class Virtual:
                 self.id,
             )
         )
-
+        self.lock.release()
         try:
             self.active = True
         except RuntimeError:
@@ -305,31 +343,42 @@ class Virtual:
         self._active_effect = None
 
     def clear_effect(self):
+        self.lock.acquire()
         self._ledfx.events.fire_event(EffectClearedEvent())
+        self.clear_transition_effect()
 
-        self._transition_effect = self._active_effect
-        self._active_effect = DummyEffect(self.pixel_count)
+        if (
+            self._config["transition_mode"] != "None"
+            and self._config["transition_time"] > 0
+        ):
+            self._transition_effect = self._active_effect
+            self._active_effect = DummyEffect(self.pixel_count)
 
-        self.transition_frame_total = (
-            self.refresh_rate * self._config["transition_time"]
-        )
-        self.transition_frame_counter = 0
+            self.transition_frame_total = (
+                self.refresh_rate * self._config["transition_time"]
+            )
+            self.transition_frame_counter = 0
+        else:
+            # no transition effect to clean up, so clear the active effect now!
+            self.clear_active_effect()
 
         self._ledfx.loop.call_later(
             self._config["transition_time"], self.clear_frame
         )
+        self.lock.release()
 
     def clear_transition_effect(self):
         if self._transition_effect is not None:
-            self._transition_effect.deactivate()
+            self._transition_effect._deactivate()
         self._transition_effect = None
 
     def clear_active_effect(self):
         if self._active_effect is not None:
-            self._active_effect.deactivate()
+            self._active_effect._deactivate()
         self._active_effect = None
 
     def clear_frame(self):
+        self.lock.acquire()
         self.clear_active_effect()
         self.clear_transition_effect()
 
@@ -340,8 +389,94 @@ class Virtual:
             self._ledfx.events.fire_event(
                 VirtualUpdateEvent(self.id, self.assembled_frame)
             )
+            self.lock.release()
+            self.deactivate()
+        else:
+            self.lock.release()
 
-            self._active = False
+    def force_frame(self, color):
+        """
+        Force all pixels in device to color
+        Use for pre-clearing in calibration scenarios
+        """
+        self.assembled_frame = np.full((self.pixel_count, 3), color)
+        self.flush(self.assembled_frame)
+        self._ledfx.events.fire_event(
+            VirtualUpdateEvent(self.id, self.assembled_frame)
+        )
+
+    def oneshot(self, color, ramp, hold, fade):
+        """
+        Force all pixels in virtual to color over a time envelope defined in ms
+        Following calls will override any active one shot
+
+        Parameters:
+            ramp time from 0% to 100% in ms
+            hold time at 100% in ms
+            fade time from 100% to 0% in ms
+        Returns:
+            True if oneshot was activated, False if not
+        """
+        if self.active:
+            self._os_color = np.array(color, dtype=float)
+            self._os_ramp = ramp / 1000.0
+            self._os_hold = hold / 1000.0
+            self._os_fade = fade / 1000.0
+            self._os_start = timeit.default_timer()
+            self._os_hold_end = self._os_ramp + self._os_hold
+            self._os_fade_end = self._os_ramp + self._os_hold + self._os_fade
+            self._os_weight = 0.0
+            self._os_active = True
+            result = True
+        else:
+            result = False
+        return result
+
+    def oneshot_weight(self):
+        passed = timeit.default_timer() - self._os_start
+        if passed <= self._os_ramp:
+            self._os_weight = passed / self._os_ramp
+        elif passed <= self._os_hold_end:
+            self._os_weight = 1.0
+        elif passed <= self._os_fade_end:
+            self._os_weight = (self._os_fade_end - passed) / self._os_fade
+        else:
+            self._os_active = False
+            self._os_weight = 0.0
+        # _LOGGER.info(f"oneshot_state: {passed} {self._os_ramp} {self._os_hold_end} {self._os_fade_end} {self._os_active} {self._os_weight}")
+
+    def oneshot_apply(self, seg):
+        blend = np.multiply(self._os_color, self._os_weight)
+        np.multiply(seg, 1 - self._os_weight, seg)
+        np.add(seg, blend, seg)
+
+    def set_calibration(self, calibration):
+        self._calibration = calibration
+
+    def set_highlight(self, state, device_id, start, end, flip):
+        if self._calibration is False:
+            return f"Cannot set highlight when {self.name} is not in calibration mode"
+
+        self._hl_state = state
+        if not state:
+            return None
+
+        device_id = device_id.lower()
+        device = self._ledfx.devices.get(device_id)
+        if device is None:
+            return f"Device {device_id} not found"
+
+        if start > device.pixel_count - 1 or end > device.pixel_count - 1:
+            return f"start and end must be less than {device.pixel_count}"
+
+        self._hl_device = device_id
+        self._hl_start = start
+        self._hl_end = end
+        if flip:
+            self._hl_step = -1
+        else:
+            self._hl_step = 1
+        return None
 
     @property
     def active_effect(self):
@@ -351,6 +486,10 @@ class Virtual:
         while True:
             if not self._active:
                 break
+            start_time = timeit.default_timer()
+            # we need to lock before we test, or we could deactivate
+            # between test and execution
+            self.lock.acquire()
             if (
                 self._active_effect
                 and self._active_effect.is_active
@@ -371,64 +510,86 @@ class Virtual:
                     self._ledfx.events.fire_event(
                         VirtualUpdateEvent(self.id, self.assembled_frame)
                     )
+            self.lock.release()
 
-            time.sleep(fps_to_sleep_interval(self.refresh_rate))
+            # adjust for the frame assemble time, min allowed sleep 1 ms
+            # this will be more frame accurate on high res sleep systems
+            run_time = timeit.default_timer() - start_time
+            sleep_time = max(
+                0.001, fps_to_sleep_interval(self.refresh_rate) - run_time
+            )
+            time.sleep(sleep_time)
+
+            # use an aggressive check for did we sleep against expected min clk
+            # for all high res scenarios this will be passive
+            # for unexpected high res sleep on windows scenarios it will adapt
+            pass_time = timeit.default_timer() - start_time
+            if pass_time < (self._min_time / 2):
+                time.sleep(max(0.001, self._min_time - pass_time))
 
     def assemble_frame(self):
         """
         Assembles the frame to be flushed.
         """
         # Get and process active effect frame
-        self._active_effect.render()
+        self._active_effect._render()
         frame = self._active_effect.get_pixels()
-        if frame is None:
-            return
-        frame[frame > 255] = 255
-        frame[frame < 0] = 0
-        # np.clip(frame, 0, 255, frame)
-
-        if self._config["center_offset"]:
-            frame = np.roll(frame, self._config["center_offset"], axis=0)
-
-        # This part handles blending two effects together
-        if (
-            self._transition_effect is not None
-            and self._transition_effect.is_active
-            and hasattr(self._transition_effect, "pixels")
-            and self._config["transition_mode"] != "None"
-            and self._config["transition_time"] > 0
-        ):
-            # Get and process transition effect frame
-            self._transition_effect.render()
-            transition_frame = self._transition_effect.get_pixels()
-            # np.clip(transition_frame, 0, 255, transition_frame)
-            transition_frame[frame > 255] = 255
-            transition_frame[frame < 0] = 0
+        if frame is not None:
+            frame[frame > 255] = 255
+            frame[frame < 0] = 0
+            # np.clip(frame, 0, 255, frame)
 
             if self._config["center_offset"]:
-                transition_frame = np.roll(
-                    transition_frame,
-                    self._config["center_offset"],
-                    axis=0,
+                frame = np.roll(frame, self._config["center_offset"], axis=0)
+
+            # This part handles blending two effects together
+            if (
+                self._transition_effect is not None
+                and self._transition_effect.is_active
+                and hasattr(self._transition_effect, "pixels")
+            ):
+                # Get and process transition effect frame
+                self._transition_effect._render()
+                transition_frame = self._transition_effect.get_pixels()
+                transition_frame[transition_frame > 255] = 255
+                transition_frame[transition_frame < 0] = 0
+
+                if self._config["center_offset"]:
+                    transition_frame = np.roll(
+                        transition_frame,
+                        self._config["center_offset"],
+                        axis=0,
+                    )
+
+                # Blend both frames together
+                self.transition_frame_counter += 1
+                self.transition_frame_counter = min(
+                    max(self.transition_frame_counter, 0),
+                    self.transition_frame_total,
                 )
 
-            # Blend both frames together
-            self.transition_frame_counter += 1
-            self.transition_frame_counter = min(
-                max(self.transition_frame_counter, 0),
-                self.transition_frame_total,
-            )
-            weight = (
-                self.transition_frame_counter / self.transition_frame_total
-            )
-            self.frame_transitions(
-                self.transitions, frame, transition_frame, weight
-            )
-            if self.transition_frame_counter == self.transition_frame_total:
-                self.clear_transition_effect()
+                if self.transition_frame_total == 0:
+                    # the transition should happen immediately
+                    weight = 1
+                else:
+                    # calculates how far in we are in the transition
+                    # 0 = previous effect and 1 = next effect
+                    weight = (
+                        self.transition_frame_counter
+                        / self.transition_frame_total
+                    )
 
-        np.multiply(frame, self._config["max_brightness"], frame)
+                self.frame_transitions(
+                    self.transitions, frame, transition_frame, weight
+                )
+                if (
+                    self.transition_frame_counter
+                    == self.transition_frame_total
+                ):
+                    self.clear_transition_effect()
 
+            np.multiply(frame, self._config["max_brightness"], frame)
+            np.multiply(frame, self._ledfx.config["global_brightness"], frame)
         return frame
 
     def activate(self):
@@ -453,6 +614,7 @@ class Virtual:
             except ValueError as e:
                 _LOGGER.error(e)
             self._active = True
+            self._os_active = False
 
         # self.thread_function()
 
@@ -464,6 +626,7 @@ class Virtual:
 
     def deactivate(self):
         self._active = False
+        self._os_active = False
         if hasattr(self, "_thread"):
             self._thread.join()
         self.deactivate_segments()
@@ -494,39 +657,83 @@ class Virtual:
         """
         Flushes the provided data to the devices.
         """
+
         if pixels is None:
             pixels = self.assembled_frame
+
+        if self._os_active:
+            self.oneshot_weight()
+
+        color_cycle = itertools.cycle(color_list)
+
         for device_id, segments in self._segments_by_device.items():
             data = []
-            for (
-                start,
-                stop,
-                step,
-                device_start,
-                device_end,
-            ) in segments:
-                if self._config["mapping"] == "span":
-                    data.append(
-                        (pixels[start:stop:step], device_start, device_end)
-                    )
-                elif self._config["mapping"] == "copy":
-                    target_len = device_end - device_start + 1
-                    data.append(
-                        (
-                            interpolate_pixels(pixels, target_len)[::step],
+            device = self._ledfx.devices.get(device_id)
+            if device is not None:
+                if device.is_active():
+                    if self._calibration:
+                        self.render_calibration(
+                            data, device, segments, device_id, color_cycle
+                        )
+                    elif self._config["mapping"] == "span":
+                        for (
+                            start,
+                            stop,
+                            step,
                             device_start,
                             device_end,
-                        )
-                    )
-            device = self._ledfx.devices.get(device_id)
-            if device is None:
-                _LOGGER.warning(
-                    f"Virtual {self.id}: No active devices - Deactivating."
-                )
-                self.deactivate()
-            elif device.is_active():
-                device.update_pixels(self.id, data)
-        # self.interpolate.cache_clear()
+                        ) in segments:
+                            seg = pixels[start:stop:step]
+                            if self._os_active:
+                                self.oneshot_apply(seg)
+                            data.append((seg, device_start, device_end))
+                    elif self._config["mapping"] == "copy":
+                        for (
+                            start,
+                            stop,
+                            step,
+                            device_start,
+                            device_end,
+                        ) in segments:
+                            target_len = device_end - device_start + 1
+                            seg = interpolate_pixels(pixels, target_len)[
+                                ::step
+                            ]
+                            if self._os_active:
+                                self.oneshot_apply(seg)
+                            data.append((seg, device_start, device_end))
+                    device.update_pixels(self.id, data)
+
+    def render_calibration(
+        self, data, device, segments, device_id, color_cycle
+    ):
+        """
+        Renders the calibration data to the virtual output
+        """
+
+        # set data to black for full length of led strip allow other segments to overwrite
+        data.append(
+            (
+                np.array([0.0, 0.0, 0.0], dtype=float),
+                0,
+                device.pixel_count - 1,
+            )
+        )
+
+        for start, stop, step, device_start, device_end in segments:
+            # add data forced to color sequence of RGBCMY
+            color = np.array(parse_color(next(color_cycle)), dtype=float)
+            pattern = make_pattern(color, device_end - device_start + 1, step)
+            data.append((pattern, device_start, device_end))
+        # render the highlight
+        if self._hl_state and device_id == self._hl_device:
+            color = np.array(parse_color("white"), dtype=float)
+            pattern = make_pattern(
+                color,
+                self._hl_end - self._hl_start + 1,
+                self._hl_step,
+            )
+            data.append((pattern, self._hl_start, self._hl_end))
 
     @property
     def name(self):
@@ -678,7 +885,7 @@ class Virtual:
                 _config["frequency_min"] = min(
                     _config["frequency_min"], MAX_FREQ - MIN_FREQ_DIFFERENCE
                 )
-                _config["frequency_min"] = min(
+                _config["frequency_min"] = max(
                     _config["frequency_min"], MIN_FREQ
                 )
                 _config["frequency_max"] = max(
@@ -743,12 +950,22 @@ class Virtuals:
                 id=virtual["id"],
                 config=virtual["config"],
                 is_device=virtual["is_device"],
+                auto_generated=virtual["auto_generated"],
                 ledfx=self._ledfx,
             )
             if "segments" in virtual:
-                self._ledfx.virtuals.get(virtual["id"]).update_segments(
-                    virtual["segments"]
-                )
+                try:
+                    self._ledfx.virtuals.get(virtual["id"]).update_segments(
+                        virtual["segments"]
+                    )
+                except vol.MultipleInvalid:
+                    _LOGGER.warning(
+                        "Virtual Segment Changed. Not restoring segment"
+                    )
+                    continue
+                except RuntimeError:
+                    pass
+
             if "effect" in virtual:
                 try:
                     effect = self._ledfx.effects.create(
@@ -783,6 +1000,7 @@ class Virtuals:
         # Create the new virtual and validate the schema.
         _config = kwargs.pop("config", None)
         _is_device = kwargs.pop("is_device", False)
+        _auto_generated = kwargs.pop("auto_generated", False)
         if _config is not None:
             _config = Virtual.CONFIG_SCHEMA(_config)
             obj = Virtual(config=_config, *args, **kwargs)
@@ -792,6 +1010,7 @@ class Virtuals:
         # Attach some common properties
         setattr(obj, "_id", id)
         setattr(obj, "is_device", _is_device)
+        setattr(obj, "auto_generated", _auto_generated)
 
         # Store the object into the internal list and return it
         self._virtuals[id] = obj
