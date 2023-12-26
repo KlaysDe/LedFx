@@ -20,7 +20,9 @@
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/ledfx/__main__.py",
-            "args": ["-vv"],
+            "args": [
+                "-vv"
+            ],
             "console": "integratedTerminal",
             "justMyCode": false,
             "windows": {
@@ -35,8 +37,5 @@
             "console": "integratedTerminal",
             "justMyCode": false
         }
-
     ]
-
-
 }
