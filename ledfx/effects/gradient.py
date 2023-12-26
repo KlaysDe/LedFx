@@ -125,9 +125,11 @@ class GradientEffect(Effect):
                 self.pixel_count,
             )
 
-    def _roll_gradient(self):
+    def roll_gradient(self):
         if self._config["gradient_roll"] == 0:
             return
+
+        self._assert_gradient()
 
         self._gradient_roll_counter += self._config["gradient_roll"]
 
@@ -146,6 +148,21 @@ class GradientEffect(Effect):
 
         return self._gradient_curve[:, int((self.pixel_count - 1) * point)]
 
+    def get_gradient_color_vectorized(self, points):
+        self._assert_gradient()
+
+        # Ensure points are within the valid range [0, 1]
+        points = np.clip(points, 0, 1)
+
+        # Calculate indices for the gradient lookup
+        indices = ((self.pixel_count - 1) * points).astype(int)
+
+        # Use advanced indexing to get colors for each point
+        colors = self._gradient_curve[:, indices]
+
+        # Transpose and reshape to get the correct shape (height, width, color_channels)
+        return colors.transpose(1, 2, 0)
+
     def config_updated(self, config):
         """Invalidate the gradient"""
         self._gradient_curve = None
@@ -155,7 +172,7 @@ class GradientEffect(Effect):
 
         output = self._gradient_curve * y
         # Apply and roll the gradient if necessary
-        self._roll_gradient()
+        self.roll_gradient()
 
         return output.T
 
@@ -168,6 +185,9 @@ class TemporalGradientEffect(TemporalEffect, GradientEffect, ModulateEffect):
 
     NAME = "Gradient"
     CATEGORY = "Non-Reactive"
+
+    def on_activate(self, pixel_count):
+        pass
 
     def effect_loop(self):
         # TODO: Could add some cool effects like twinkle or sin modulation

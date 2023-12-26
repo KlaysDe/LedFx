@@ -12,6 +12,7 @@ class FadeEffect(TemporalEffect, GradientEffect):
 
     NAME = "Fade"
     CATEGORY = "Non-Reactive"
+    HIDDEN_KEYS = ["gradient_roll"]
 
     CONFIG_SCHEMA = vol.Schema(
         {
@@ -26,6 +27,9 @@ class FadeEffect(TemporalEffect, GradientEffect):
     def config_updated(self, config):
         self.idx = 0
         self.forward = True
+
+    def on_activate(self, pixel_count):
+        pass
 
     def effect_loop(self):
         self.idx += 0.0015

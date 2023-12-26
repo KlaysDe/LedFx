@@ -9,14 +9,15 @@ import voluptuous as vol
 from ledfx.effects import Effect
 
 _LOGGER = logging.getLogger(__name__)
-DEFAULT_RATE = 1.0 / 300.0
+
+# use 10 frames per second as default rate at 1x multiplier
+# windows pre 3.11 will cap at 64Hz max for now,
+# other OS at 100Hz with speed slider ot 10
+DEFAULT_RATE = 1.0 / 10.0
 
 
 @Effect.no_registration
 class TemporalEffect(Effect):
-    _thread_active = False
-    _thread = None
-
     CONFIG_SCHEMA = vol.Schema(
         {
             vol.Optional(
@@ -27,8 +28,12 @@ class TemporalEffect(Effect):
         }
     )
 
-    def thread_function(self):
+    def __init__(self, ledfx, config):
+        super().__init__(ledfx, config)
+        self._thread_active = False
+        self._thread = None
 
+    def thread_function(self):
         while self._thread_active:
             startTime = time.time()
 
@@ -45,8 +50,9 @@ class TemporalEffect(Effect):
             timeToSleep = (sleepInterval / self._config["speed"]) - (
                 time.time() - startTime
             )
-            if timeToSleep > 0:
-                time.sleep(timeToSleep)
+            if timeToSleep < 0.001:
+                timeToSleep = 0.001
+            time.sleep(timeToSleep)
 
     def effect_loop(self):
         """
@@ -56,7 +62,6 @@ class TemporalEffect(Effect):
         pass
 
     def on_activate(self, pixel_count):
-
         self._thread_active = True
         self._thread = Thread(target=self.thread_function)
         self._thread.start()

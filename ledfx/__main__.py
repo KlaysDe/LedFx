@@ -16,40 +16,28 @@ For non-development purposes run:
 """
 
 import argparse
+import importlib
 import logging
 import os
 import subprocess
 import sys
-import importlib
 from logging.handlers import RotatingFileHandler
+
 try:
     import psutil
+
     have_psutil = True
 except ImportError:
     have_psutil = False
-try:
-    import yappi
-    have_yappi = True
-except ImportError:
-    have_yappi = False
-try:
-    from pyupdater.client import Client
-    have_updater = True
-except ImportError:
-    have_updater = False
 
 import ledfx.config as config_helpers
 from ledfx.consts import (
-    PROJECT_NAME,
     PROJECT_VERSION,
     REQUIRED_PYTHON_STRING,
     REQUIRED_PYTHON_VERSION,
 )
 from ledfx.core import LedFxCore
-from ledfx.utils import currently_frozen
-
-# Logger Variables
-PYUPDATERLOGLEVEL = 35
+from ledfx.utils import currently_frozen, get_icon_path
 
 
 def validate_python() -> None:
@@ -84,13 +72,10 @@ def reset_logging():
 
 
 def setup_logging(loglevel, config_dir):
-    # Create a custom logging level to virtual pyupdater progress
-    reset_logging()
-
     console_loglevel = loglevel or logging.WARNING
     console_logformat = "[%(levelname)-8s] %(name)-30s : %(message)s"
 
-    file_loglevel = logging.INFO
+    file_loglevel = loglevel or logging.INFO
     file_logformat = "%(asctime)-8s %(name)-30s %(levelname)-8s %(message)s"
 
     root_logger = logging.getLogger()
@@ -103,12 +88,8 @@ def setup_logging(loglevel, config_dir):
         backupCount=5,  # once it hits 2.5MB total, start removing logs.
     )
     file_handler.setLevel(file_loglevel)  # set loglevel
-    file_formatter = logging.Formatter(
-        file_logformat
-    )  # a simple log file format
-    file_handler.setFormatter(
-        file_formatter
-    )  # tell the file_handler to use this format
+    file_formatter = logging.Formatter(file_logformat)
+    file_handler.setFormatter(file_formatter)
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(console_loglevel)  # set loglevel
@@ -124,12 +105,9 @@ def setup_logging(loglevel, config_dir):
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
 
-    logging.addLevelName(PYUPDATERLOGLEVEL, "Updater")
-
     # Suppress some of the overly verbose logs
     logging.getLogger("sacn").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
-    logging.getLogger("pyupdater").setLevel(logging.WARNING)
     logging.getLogger("zeroconf").setLevel(logging.WARNING)
 
     global _LOGGER
@@ -199,23 +177,28 @@ def parse_args():
         default=None,
         type=str,
     )
-    parser.add_argument(
+
+    group = parser.add_mutually_exclusive_group()
+
+    group.add_argument(
         "--tray",
         dest="tray",
         action="store_true",
-        help="Hide LedFx console to the system tray",
+        help="Force LedFx system tray icon",
     )
-    parser.add_argument(
-        "--performance",
-        dest="performance",
+
+    group.add_argument(
+        "--no-tray",
+        dest="no_tray",
         action="store_true",
-        help="Profile LedFx's performance. A developer can use this to diagnose performance issues.",
+        help="Force no LedFx system tray icon",
     )
+
     parser.add_argument(
         "--offline",
         dest="offline_mode",
         action="store_true",
-        help="Disable automated updates and sentry crash logger",
+        help="Disable sentry crash logger",
     )
     parser.add_argument(
         "--sentry-crash-test",
@@ -227,12 +210,11 @@ def parse_args():
 
 
 def installed_via_pip():
-
     """Check to see if LedFx is installed via pip
     Returns:
         boolean
     """
-    pip_spec = importlib.util.find_spec('pip')
+    pip_spec = importlib.util.find_spec("pip")
     if pip_spec is None:
         return False
     pip_package_command = subprocess.check_output(
@@ -247,60 +229,27 @@ def installed_via_pip():
         return False
 
 
-def update_ledfx(icon=None):
-    # initialize & refresh in one update, check client
+def log_packages():
+    from platform import (
+        processor,
+        python_build,
+        python_implementation,
+        python_version,
+        release,
+        system,
+    )
 
-    def notify(msg):
-        if icon and icon.HAS_NOTIFICATION:
-            icon.remove_notification()
-            icon.notify(msg)
-        _LOGGER.log(PYUPDATERLOGLEVEL, msg)
+    from pkg_resources import working_set
 
-    def log_status_info(info):
-        total = info.get("total")
-        downloaded = info.get("downloaded")
-        percent_complete = info.get("percent_complete")
-        time = info.get("time")
-        _LOGGER.log(
-            PYUPDATERLOGLEVEL,
-            f"{downloaded} of {total} [{percent_complete} complete, {time} remaining]",
-        )
-
-    class ClientConfig:
-        PUBLIC_KEY = "Txce3TE9BUixsBtqzDba6V5vBYltt/0pw5oKL8ueCDg"
-        APP_NAME = PROJECT_NAME
-        COMPANY_NAME = "LedFx Developers"
-        HTTP_TIMEOUT = 5
-        MAX_DOWNLOAD_RETRIES = 2
-        UPDATE_URLS = ["https://ledfx.app/downloads/"]
-
-    client = Client(ClientConfig(), refresh=True)
-    _LOGGER.log(PYUPDATERLOGLEVEL, "Checking for updates...")
-    # First we check for updates.
-    # If an update is found, an update object will be returned
-    # If no updates are available, None will be returned
-    ledfx_update = client.update_check(PROJECT_NAME, PROJECT_VERSION)
-
-    # Download the update
-    if ledfx_update is not None:
-        client.add_progress_hook(log_status_info)
-        _LOGGER.log(PYUPDATERLOGLEVEL, "Update found!")
-        notify(
-            "Downloading update, please wait... LedFx will restart when complete."
-        )
-        ledfx_update.download()
-        # Install and restart
-        if ledfx_update.is_downloaded():
-            notify("Download complete. Restarting LedFx...")
-            ledfx_update.extract_restart()
-        else:
-            notify("Unable to download update.")
-    else:
-        # No Updates, into main we go
-        _LOGGER.log(
-            PYUPDATERLOGLEVEL,
-            "You're all up to date, enjoy the light show!",
-        )
+    _LOGGER.debug(f"{system()} : {release()} : {processor()}")
+    _LOGGER.debug(
+        f"{python_version()} : {python_build()} : {python_implementation()}"
+    )
+    _LOGGER.debug("Packages")
+    dists = [d for d in working_set]
+    dists.sort(key=lambda x: x.project_name)
+    for dist in dists:
+        _LOGGER.debug(f"{dist.project_name} : {dist.version}")
 
 
 def main():
@@ -333,7 +282,7 @@ def main():
         else:
             p.nice(15)
 
-    if not (currently_frozen() or installed_via_pip()) and args.offline_mode is False:
+    if args.offline_mode is False:
         import ledfx.sentry_config  # noqa: F401
 
     if args.sentry_test:
@@ -341,36 +290,28 @@ def main():
         _LOGGER.warning("Steering LedFx into a brick wall")
         div_by_zero = 1 / 0
 
-    # if args.tray or currently_frozen():
-    #     # If pystray is imported on a device that can't display it, it explodes. Catch it
-    #     try:
-    #         import pystray
-    #     except Exception as Error:
-    #         msg = f"Error: Unable to virtual tray icon. Shutting down. Error: {Error}"
-    #         _LOGGER.critical(msg)
-    #         raise Exception(msg)
-    #         sys.exit(0)
+    if (args.tray or currently_frozen()) and not args.no_tray:
+        # If pystray is imported on a device that can't display it, it explodes. Catch it
+        try:
+            import pystray
+        except Exception as Error:
+            msg = f"Error: Unable to virtual tray icon. Shutting down. Error: {Error}"
+            _LOGGER.critical(msg)
+            raise Exception(msg)
+            sys.exit(0)
 
-    #     from PIL import Image
+        from PIL import Image
 
-    #     if currently_frozen():
-    #         current_directory = os.path.dirname(__file__)
-    #         icon_location = os.path.join(current_directory, "tray.png")
-    #     else:
-    #         current_directory = os.path.dirname(__file__)
-    #         icon_location = os.path.join(
-    #             current_directory, "..", "icons/" "tray.png"
-    #         )
-    #     icon = pystray.Icon(
-    #         "LedFx", icon=Image.open(icon_location), title="LedFx"
-    #     )
-    #     icon.visible = True
-    # else:
-    #     icon = None
-    icon = None
+        icon_location = get_icon_path("tray.png")
 
-    # if have_updater and not args.offline_mode and currently_frozen():
-    #     update_ledfx(icon)
+        icon = pystray.Icon(
+            "LedFx", icon=Image.open(icon_location), title="LedFx"
+        )
+    else:
+        icon = None
+
+    if _LOGGER.isEnabledFor(logging.DEBUG):
+        log_packages()
 
     if icon:
         icon.run(setup=entry_point)
@@ -382,13 +323,12 @@ def entry_point(icon=None):
     # have to re-parse args here :/ no way to pass them through pysicon's setup
     args = parse_args()
 
+    if icon:
+        icon.visible = True
+
     exit_code = 4
     while exit_code == 4:
         _LOGGER.info("LedFx Core is initializing")
-
-        if args.performance and have_yappi:
-            print("Collecting performance data...")
-            yappi.start()
 
         ledfx = LedFxCore(
             config_dir=args.config,
@@ -399,22 +339,6 @@ def entry_point(icon=None):
         )
 
         exit_code = ledfx.start(open_ui=args.open_ui)
-
-        if args.performance:
-            print("Finished collecting performance data")
-            filename = config_helpers.get_profile_dump_location(
-                config_dir=args.config
-            )
-            yappi.stop()
-            stats = yappi.get_func_stats()
-            yappi.get_thread_stats().print_all()
-            stats.save(filename, type="pstat")
-            print(
-                f"Saved performance data to config directory      : {filename}"
-            )
-            print(
-                "Please send the performance data to a developer : https://ledfx.app/contact/"
-            )
 
     if icon:
         icon.stop()
