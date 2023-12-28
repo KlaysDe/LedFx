@@ -3,7 +3,7 @@ import logging
 import voluptuous as vol
 
 from ledfx.config import save_config
-from ledfx.events import SceneActivatedEvent, SceneDeletedEvent
+from ledfx.events import SceneActivatedEvent, SceneCreatedEvent, SceneDeletedEvent
 from ledfx.utils import generate_id
 
 _LOGGER = logging.getLogger(__name__)
@@ -69,6 +69,7 @@ class Scenes:
 
     def create(self, scene_config, scene_id=None):
         """Creates a scene of current effects of specified virtuals if no ID given, else updates one with matching id"""
+        _LOGGER.info("New Scene Created!")
         scene_config = self.SCENE_SCHEMA(scene_config)
         scene_id = (
             scene_id
@@ -87,6 +88,7 @@ class Scenes:
 
         # Update the scene if it already exists, else create it
         self._scenes[scene_id] = scene_config
+        self._ledfx.events.fire_event(SceneCreatedEvent(scene_id))
         self.save_to_config()
 
     def activate(self, scene_id):

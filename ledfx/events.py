@@ -21,6 +21,7 @@ class Event:
     EFFECT_CLEARED = "effect_cleared"
     SCENE_ACTIVATED = "scene_activated"
     SCENE_DELETED = "scene_deleted"
+    SCENE_CREATED = "scene_created"
     PRESET_ACTIVATED = "preset_activated"
     VIRTUAL_CONFIG_UPDATE = "virtual_config_update"
     GLOBAL_PAUSE = "global_pause"
@@ -162,6 +163,14 @@ class SceneDeletedEvent(Event):
 
     def __init__(self, scene_id):
         super().__init__(Event.SCENE_DELETED)
+        self.scene_id = scene_id
+
+
+class SceneCreatedEvent(Event):
+    """Event emitted when a scene is set"""
+
+    def __init__(self, scene_id):
+        super().__init__(Event.SCENE_CREATED)
         self.scene_id = scene_id
 
 
