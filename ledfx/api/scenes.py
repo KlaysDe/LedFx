@@ -66,7 +66,7 @@ class ScenesEndpoint(RestEndpoint):
 
     async def delete(self, request) -> web.Response:
         """Delete a scene"""
-        await self.wrapped_request(self.delete_action, request)
+        return await self.wrapped_request(self.delete_action, request)
 
     async def delete_action(self, request):
         data = await request.json()
@@ -77,7 +77,7 @@ class ScenesEndpoint(RestEndpoint):
         
     async def put(self, request) -> web.Response:
         """Activate a scene"""
-        await self.wrapped_request(self.put_action, request)
+        return await self.wrapped_request(self.put_action, request)
         
     async def put_action(self, request):
         data = await request.json()
@@ -117,7 +117,7 @@ class ScenesEndpoint(RestEndpoint):
 
     async def post(self, request) -> web.Response:
         """Save current effects of virtuals as a scene"""
-        await self.wrapped_request(self.post_action, request)
+        return await self.wrapped_request(self.post_action, request)
         
     async def post_action(self, request):
         data = await request.json()

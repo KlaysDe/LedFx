@@ -3,7 +3,7 @@ import logging
 import voluptuous as vol
 
 from ledfx.config import save_config
-from ledfx.events import SceneActivatedEvent, SceneCreatedEvent, SceneDeletedEvent
+from ledfx.events import SceneActivatedEvent, SceneCreatedEvent, SceneDeactivatedEvent, SceneDeletedEvent, SceneUpdatedEvent
 from ledfx.utils import generate_id
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,9 +71,6 @@ class Scenes:
         return self._scenes
     
     def get(self, *args):
-        #if scene_id in self._scenes:
-        #    return self._scenes[scene_id]
-        #raise Exception(f"Scene with id {scene_id} not found")
         return self._scenes.get(*args)
     
     def create(self, scene_config, scene_id=None):
@@ -142,15 +139,22 @@ class Scenes:
     
     def deactivate(self, scene_id):
         scene = self.get(scene_id)
+        self._ledfx.events.fire_event(SceneDeactivatedEvent(scene_id))
         for virtual in scene:
             virtual.clear_effect()
     
     def rename(self, old_id, new_id):
         scene = self.get(old_id)
         scene['name'] = new_id
+        self._ledfx.events.fire_event(SceneUpdatedEvent(new_id, old_id))
         self.__save()
     
     def update(self, scene_id, scene_definition):
+        old_scene = self.get(scene_id)
+        if old_scene:
+            self._ledfx.events.fire_event(SceneUpdatedEvent(scene_id))
+        else:
+            self._ledfx.events.fire_event(SceneCreatedEvent(scene_id))
         self._scenes[scene_id] = scene_definition
         self.__save()
         pass
