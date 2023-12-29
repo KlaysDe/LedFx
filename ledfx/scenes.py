@@ -67,13 +67,14 @@ class Scenes:
     def values(self):
         return self._scenes.values()
     
-    def get(self):
+    def get_all(self):
         return self._scenes
     
-    def get(self, scene_id):
-        if scene_id in self._scenes:
-            return self._scenes[scene_id]
-        raise Exception(f"Scene with id {scene_id} not found")
+    def get(self, *args):
+        #if scene_id in self._scenes:
+        #    return self._scenes[scene_id]
+        #raise Exception(f"Scene with id {scene_id} not found")
+        return self._scenes.get(*args)
     
     def create(self, scene_config, scene_id=None):
         """Creates a scene of current effects of specified virtuals if no ID given, else updates one with matching id"""

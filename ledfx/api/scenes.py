@@ -8,6 +8,8 @@ from ledfx.config import save_config
 from ledfx.events import SceneActivatedEvent
 from ledfx.utils import generate_id
 
+import traceback
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -28,7 +30,7 @@ class ScenesEndpoint(RestEndpoint):
     
     async def wrapped_request(self, method, request) -> web.Response:
         try:
-            result = await method()
+            result = await method(request)
             if not result:
                 response = {"status": "success"}
             elif type(result) == str:
@@ -43,13 +45,14 @@ class ScenesEndpoint(RestEndpoint):
                 response = result
             return web.json_response(data=response, status=200)
         except Exception as e:
-            msg = str(e)
+            msg = f'{type(e).__name__}: {e}'
             if type(e) == JSONDecodeError:
                 msg = f"JSON Decoding failed: {e}"
             response = {
                 "status": "failed",
-                "reason": str(e),
+                "reason": msg,
             }
+            tb = traceback.format_exc()
             return web.json_response(data=response, status=400)
 
 
@@ -57,7 +60,7 @@ class ScenesEndpoint(RestEndpoint):
         """Get all scenes"""
         response = {
             "status": "success",
-            "scenes": self._ledfx.scenes.get(),
+            "scenes": self._ledfx.scenes.get_all(),
         }
         return web.json_response(data=response, status=200)
 
@@ -114,21 +117,23 @@ class ScenesEndpoint(RestEndpoint):
 
     async def post(self, request) -> web.Response:
         """Save current effects of virtuals as a scene"""
-        self.wrapped_request(self.post_action, request)
+        await self.wrapped_request(self.post_action, request)
         
     async def post_action(self, request):
         data = await request.json()
 
         copied_keys = {
             "name": {'required': True}, 
-            "scene_tags": None, 
-            "scene_puturl": None, 
-            "scene_payload": None, 
-            "scene_midiactivate": None, 
+            "scene_tags": {}, 
+            "scene_puturl": {}, 
+            "scene_payload": {}, 
+            "scene_midiactivate": {}, 
             "scene_image": {'default': 'Wallpaper'}
         }
         
-        scene_config = {}
+        scene_config = {
+            'virtuals': {}
+        }
         
         for key, cfg in copied_keys.items():
             if key in data:
