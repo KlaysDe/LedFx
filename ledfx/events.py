@@ -20,8 +20,10 @@ class Event:
     EFFECT_SET = "effect_set"
     EFFECT_CLEARED = "effect_cleared"
     SCENE_ACTIVATED = "scene_activated"
+    SCENE_DEACTIVATED = "scene_deactivated"
     SCENE_DELETED = "scene_deleted"
     SCENE_CREATED = "scene_created"
+    SCENE_UPDATED = "scene_updated"
     PRESET_ACTIVATED = "preset_activated"
     VIRTUAL_CONFIG_UPDATE = "virtual_config_update"
     GLOBAL_PAUSE = "global_pause"
@@ -156,6 +158,13 @@ class SceneActivatedEvent(Event):
     def __init__(self, scene_id):
         super().__init__(Event.SCENE_ACTIVATED)
         self.scene_id = scene_id
+        
+class SceneDeactivatedEvent(Event):
+    """Event emitted when a scene is set"""
+
+    def __init__(self, scene_id):
+        super().__init__(Event.SCENE_DEACTIVATED)
+        self.scene_id = scene_id
 
 
 class SceneDeletedEvent(Event):
@@ -172,6 +181,15 @@ class SceneCreatedEvent(Event):
     def __init__(self, scene_id):
         super().__init__(Event.SCENE_CREATED)
         self.scene_id = scene_id
+
+
+class SceneUpdatedEvent(Event):
+    """Event emitted when a scene is set"""
+
+    def __init__(self, scene_id, scene_id_new = None):
+        super().__init__(Event.SCENE_UPDATED)
+        self.scene_id = scene_id
+        self.scene_id_new=scene_id_new
 
 
 class VirtualConfigUpdateEvent(Event):

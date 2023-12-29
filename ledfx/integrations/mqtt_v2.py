@@ -8,7 +8,7 @@ from ledfx.devices import Device
 from ledfx.integrations.klays_hass_mqtt.entities.entity_select import HaSelect
 from ledfx.virtuals import Virtual
 
-from ledfx.events import Event, SceneActivatedEvent, SceneCreatedEvent, SceneDeletedEvent
+from ledfx.events import Event, SceneActivatedEvent, SceneCreatedEvent, SceneDeactivatedEvent, SceneDeletedEvent, SceneUpdatedEvent
 from ledfx.events import DeviceCreatedEvent,DeviceUpdateEvent,DeviceDeleteEvent,EffectSetEvent,EffectClearedEvent
 
 from .klays_hass_mqtt import HassClient
@@ -24,16 +24,16 @@ KEY_HA_ENTITY_ACTIVE = 'ha_ent_active'
 HA_SCENE_NAME_ALL_OFF = '__ALL_OFF__'
 
 class HaDeviceDefinition:
-    Device: HaDevice = None
-    EntityActive: HaSwitch = None
+    _device: HaDevice = None
+    _entity_active: HaSwitch = None
     
     def __init__(self, client:HassClient, device_id:str) -> None:
-        self.Device = HaDevice(client, 'LedFX '+device_id, 'LedFX')
-        self.EntityActive = HaSwitch(client, self.Device, "Active", False)
+        self._device = HaDevice(client, 'LedFX '+device_id, 'LedFX')
+        self._entity_active = HaSwitch(client, self._device, "Active", False)
         pass
     
     def destroy_ha_device(self):
-        self.EntityActive.deleteEntity()
+        self._entity_active.deleteEntity()
         pass
 
 class MQTT_V2(Integration):
@@ -93,8 +93,8 @@ class MQTT_V2(Integration):
         self._client : HassClient = None
         self._data = []
         self._listeners = []
-        self._haDevices : [str, HaDeviceDefinition] = {}
-        self._knownScenes = [HA_SCENE_NAME_ALL_OFF, 'placeholder']
+        self._ha_devices : [str, HaDeviceDefinition] = {}
+        self._known_scenes = [HA_SCENE_NAME_ALL_OFF]
         self.__prepare_ledfx_listeners()
         _LOGGER.info(f"CONFIG: {self._config}")
         
@@ -106,9 +106,10 @@ class MQTT_V2(Integration):
                 self.__hass_client_connect_cb()
                 
             self._client = HassClient(host, port, user, passwd, state_topic_base=base_topic, connect_callback=connect_callback)
-            self._ledfxDev = HaDevice(self._client, "LedFX", "LedFX Visualized")
-            self._sceneSelect = HaSelect(self._client, self._ledfxDev, "Active Scene", self._knownScenes)
+            self._ledfxDev = HaDevice(self._client, "LedFX", "LedFX Visualizer")
+            self._sceneSelect = HaSelect(self._client, self._ledfxDev, "Active Scene", self._known_scenes)
             self._sceneSelect.setCallback(self.__ha_cb_scene_changed, None)
+            self.__ha_update_scene_select()
         
     def __hass_client_connect_cb(self):
         self.__create_existing_devices_in_ha()
@@ -121,12 +122,12 @@ class MQTT_V2(Integration):
     def __ha_create_new_device(self, device_id):
         return
         virtual : Virtual = self._ledfx.virtuals.get(device_id)
-        if not device_id in self._haDevices:
+        if not device_id in self._ha_devices:
             _LOGGER.info("Created Device: "+device_id)
             definition = HaDeviceDefinition(self._client, device_id)
-            self._haDevices[device_id] = definition
-            definition.EntityActive.setCallback(self.__ha_cb_dev_active_changed, device_id)
-            definition.EntityActive.publishState(virtual.active_effect == True)
+            self._ha_devices[device_id] = definition
+            definition._entity_active.setCallback(self.__ha_cb_dev_active_changed, device_id)
+            definition._entity_active.publishState(virtual.active_effect == True)
             
         pass
 
@@ -138,8 +139,8 @@ class MQTT_V2(Integration):
         pass
 
     def __get_ha_device(self, device_id) -> HaDeviceDefinition:
-        if device_id in self._haDevices:
-            return self._haDevices[device_id]
+        if device_id in self._ha_devices:
+            return self._ha_devices[device_id]
         return None
 
     def __ledfx_evt_device_created(self, event:DeviceCreatedEvent):
@@ -156,28 +157,52 @@ class MQTT_V2(Integration):
     def __ledfx_evt_effect_set(self, event:EffectSetEvent):
         dev = self.__get_ha_device(event.virtual_id)
         if dev:
-            dev.EntityActive.publishState(True)
+            dev._entity_active.publishState(True)
         pass
     
     def __ledfx_evt_effect_cleared(self, event:EffectClearedEvent):
         dev = self.__get_ha_device(event.virtual_id)
         if dev:
-            dev.EntityActive.publishState(False)
+            dev._entity_active.publishState(False)
         pass
     
     def __ha_cb_scene_changed(self, selected_scene, cb_data):
         if selected_scene == HA_SCENE_NAME_ALL_OFF:
-            self._sceneSelect.publishState('')
-            pass
+            #self._sceneSelect.publishState('')
+            #pass
+            self._ledfx.scenes.deactivate_all()
+        elif selected_scene:
+            self._ledfx.scenes.activate(selected_scene)
+            
         
         pass
     
-    def __led_evt_scene_created(self, event:SceneCreatedEvent):
+    def __ha_update_scene_select(self):
+        scenes = self._ledfx.scenes.get_all()
+        lastValue = self._sceneSelect.value
+        self._known_scenes = [HA_SCENE_NAME_ALL_OFF] + [data['name'] for key, data in scenes.items()]
+        if lastValue not in self._known_scenes:
+            lastValue = HA_SCENE_NAME_ALL_OFF
+        self._sceneSelect.updateOptions(self._known_scenes, lastValue)
         pass
-    def __led_evt_scene_activated(self, event:SceneActivatedEvent):
+    
+    def __led_evt_scene_created(self, event:SceneCreatedEvent):
+        self.__ha_update_scene_select()
         pass
     def __led_evt_scene_deleted(self, event:SceneDeletedEvent):
+        self.__ha_update_scene_select()
         pass
+    def __led_evt_scene_updated(self, event:SceneUpdatedEvent):
+        self.__ha_update_scene_select()
+        pass
+    def __led_evt_scene_activated(self, event:SceneActivatedEvent):
+        if event.scene_id in self._known_scenes:
+            self._sceneSelect.publishState(event.scene_id)
+        else:
+            self._sceneSelect.publishState('')
+    
+    def __led_evt_scene_deactivate(self, event:SceneDeactivatedEvent):
+        self._sceneSelect.publishState('')
     
     def __prepare_ledfx_listeners(self):
         events = {
@@ -189,6 +214,8 @@ class MQTT_V2(Integration):
             Event.SCENE_CREATED: self.__led_evt_scene_created,
             Event.SCENE_ACTIVATED: self.__led_evt_scene_activated,
             Event.SCENE_DELETED: self.__led_evt_scene_deleted,
+            Event.SCENE_DEACTIVATED: self.__led_evt_scene_deactivate,
+            Event.SCENE_UPDATED: self.__led_evt_scene_updated
         }
         
         for evt, cb in events.items():

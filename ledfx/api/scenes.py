@@ -91,24 +91,24 @@ class ScenesEndpoint(RestEndpoint):
         if not scene_id:
             raise Exception("No Scene id provided")
         scene = self._ledfx.scenes.get(scene_id)
-        await action_method(scene, data)
+        await action_method(scene, scene_id, data)
     
-    async def put_action_activate_in(self, scene_id, data):
+    async def put_action_activate_in(self, scene, scene_id, data):
         ms = data.get("ms")
         if ms == None:
             raise Exception("No delay provided")
         self._ledfx.scenes.activate_in(scene_id, ms)
         return f"Activated scene {scene_id}"
         
-    async def put_action_activate(self, scene_id, data):
+    async def put_action_activate(self, scene, scene_id, data):
         self._ledfx.scenes.activate(scene_id)
         return  f"Activated scene {scene_id}"
         
-    async def put_action_deactivate(self, scene_id, data):
+    async def put_action_deactivate(self, scene, scene_id, data):
         self._ledfx.scenes.deactivate(scene_id)
         return f"Deactivated scene {scene_id}"
 
-    async def put_action_rename(self, scene_id, data):
+    async def put_action_rename(self, scene, scene_id, data):
         new_name = data.get("name")
         if not new_name:
             raise Exception("No new name for the scene provided")
@@ -123,6 +123,7 @@ class ScenesEndpoint(RestEndpoint):
         data = await request.json()
 
         copied_keys = {
+            "virtuals": {'default': {}, 'internal': True},
             "name": {'required': True}, 
             "scene_tags": {}, 
             "scene_puturl": {}, 
@@ -131,14 +132,12 @@ class ScenesEndpoint(RestEndpoint):
             "scene_image": {'default': 'Wallpaper'}
         }
         
-        scene_config = {
-            'virtuals': {}
-        }
+        scene_config = {}
         
         for key, cfg in copied_keys.items():
-            if key in data:
+            if key in data and not cfg.get('internal'):
                 scene_config[key] = data[key]
-            elif cfg.get('default'):
+            elif cfg.get('default') != None:
                 scene_config[key] = cfg['default']
             elif cfg.get('required'):
                 raise Exception(f'Parameter {key} needs to be set')
@@ -156,10 +155,13 @@ class ScenesEndpoint(RestEndpoint):
         else:
             virtuals = data.get("virtuals")
             for vid, vdata in virtuals.items():
-                scene_config['virtuals'][vid] = {
-                    'type': vdata['type'],
-                    'config': vdata['config']
-                }
+                if len(vdata):
+                    scene_config['virtuals'][vid] = {
+                        'type': vdata['type'],
+                        'config': vdata['config']
+                    }
+                else:
+                    scene_config['virtuals'][vid] = {}
         
         self._ledfx.scenes.update(scene_id, scene_config)
         return {

@@ -13,6 +13,7 @@ class Scenes:
     def __init__(self, ledfx) -> None:
         self._ledfx = ledfx
         self._scenes : dict = self._ledfx.config['scenes']
+        self._active_scene = None
         
         def virtuals_validator(virtual_ids):
             return list(
@@ -137,6 +138,10 @@ class Scenes:
             delay_ms, self.activate, scene_id
         )
     
+    def deactivate_all(self):
+        for virtual in self._ledfx.virtuals.values():
+            virtual.clear_effect()
+    
     def deactivate(self, scene_id):
         scene = self.get(scene_id)
         self._ledfx.events.fire_event(SceneDeactivatedEvent(scene_id))
@@ -150,7 +155,7 @@ class Scenes:
         self.__save()
     
     def update(self, scene_id, scene_definition):
-        old_scene = self.get(scene_id)
+        old_scene = self._scenes.get(scene_id)
         if old_scene:
             self._ledfx.events.fire_event(SceneUpdatedEvent(scene_id))
         else:
