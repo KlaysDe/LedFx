@@ -16,234 +16,131 @@ class ScenesEndpoint(RestEndpoint):
 
     ENDPOINT_PATH = "/api/scenes"
 
+    def __init__(self, ledfx):
+        super().__init__(ledfx)
+        #["activate", "activate_in", "deactivate", "rename"]:
+        self._put_actions = {
+            'activate': self.put_action_activate,
+            'activate_in': self.put_action_activate_in,
+            'deactivate': self.put_action_deactivate,
+            'rename': self.put_action_rename
+        }
+    
+    async def wrapped_request(self, method, request) -> web.Response:
+        try:
+            result = await method()
+            if not result:
+                response = {"status": "success"}
+            elif type(result) == str:
+                response = {
+                    "status": "success",
+                    "payload": {
+                        "type": "info",
+                        "message": result,
+                    },
+                }
+            else:
+                response = result
+            return web.json_response(data=response, status=200)
+        except Exception as e:
+            msg = str(e)
+            if type(e) == JSONDecodeError:
+                msg = f"JSON Decoding failed: {e}"
+            response = {
+                "status": "failed",
+                "reason": str(e),
+            }
+            return web.json_response(data=response, status=400)
+
+
     async def get(self) -> web.Response:
         """Get all scenes"""
         response = {
             "status": "success",
-            "scenes": self._ledfx.config["scenes"],
+            "scenes": self._ledfx.scenes.get(),
         }
         return web.json_response(data=response, status=200)
 
     async def delete(self, request) -> web.Response:
         """Delete a scene"""
-        try:
-            data = await request.json()
-        except JSONDecodeError:
-            response = {
-                "status": "failed",
-                "reason": "JSON Decoding failed",
-            }
-            return web.json_response(data=response, status=400)
+        await self.wrapped_request(self.delete_action, request)
 
-        scene_id = data.get("id")
-        if scene_id is None:
-            response = {
-                "status": "failed",
-                "reason": 'Required attribute "id" was not provided',
-            }
-            return web.json_response(data=response, status=400)
-
-        if scene_id not in self._ledfx.config["scenes"].keys():
-            response = {
-                "status": "failed",
-                "reason": f"Scene {scene_id} does not exist",
-            }
-            return web.json_response(data=response, status=400)
-
-        # Delete the scene from configuration
-        del self._ledfx.config["scenes"][scene_id]
-
-        # Save the config
-        save_config(
-            config=self._ledfx.config,
-            config_dir=self._ledfx.config_dir,
-        )
-
-        response = {"status": "success"}
-        return web.json_response(data=response, status=200)
-
+    async def delete_action(self, request):
+        data = await request.json()
+        scene_id = data.get("id", None)
+        if not scene_id:
+            raise Exception("No Scene id provided")
+        self._ledfx.scenes.destroy(scene_id)
+        
     async def put(self, request) -> web.Response:
         """Activate a scene"""
-        try:
-            data = await request.json()
-        except JSONDecodeError:
-            response = {
-                "status": "failed",
-                "reason": "JSON Decoding failed",
-            }
-            return web.json_response(data=response, status=400)
-
+        await self.wrapped_request(self.put_action, request)
+        
+    async def put_action(self, request):
+        data = await request.json()
         action = data.get("action")
-        if action is None:
-            response = {
-                "status": "failed",
-                "reason": 'Required attribute "action" was not provided',
-            }
-            return web.json_response(data=response, status=400)
-
-        if action not in ["activate", "activate_in", "deactivate", "rename"]:
-            response = {
-                "status": "failed",
-                "reason": f'Invalid action "{action}"',
-            }
-            return web.json_response(data=response, status=400)
-
+        if not action:
+            raise Exception("No Action provided")
+        if action not in self._put_actions:
+            raise Exception(f"Action {action} is not supported")
+        action_method = self._put_actions[action]
         scene_id = data.get("id")
-        if scene_id is None:
-            response = {
-                "status": "failed",
-                "reason": 'Required attribute "id" was not provided',
-            }
-            return web.json_response(data=response, status=400)
+        if not scene_id:
+            raise Exception("No Scene id provided")
+        scene = self._ledfx.scenes.get(scene_id)
+        await action_method(scene, data)
+    
+    async def put_action_activate_in(self, scene_id, data):
+        ms = data.get("ms")
+        if ms == None:
+            raise Exception("No delay provided")
+        self._ledfx.scenes.activate_in(scene_id, ms)
+        return f"Activated scene {scene_id}"
+        
+    async def put_action_activate(self, scene_id, data):
+        self._ledfx.scenes.activate(scene_id)
+        return  f"Activated scene {scene_id}"
+        
+    async def put_action_deactivate(self, scene_id, data):
+        self._ledfx.scenes.deactivate(scene_id)
+        return f"Deactivated scene {scene_id}"
 
-        if scene_id not in self._ledfx.config["scenes"].keys():
-            response = {
-                "status": "failed",
-                "reason": f'Scene "{scene_id}" does not exist',
-            }
-            return web.json_response(data=response, status=400)
-
-        scene = self._ledfx.config["scenes"][scene_id]
-
-        if action == "activate_in":
-            ms = data.get("ms")
-            if ms is None:
-                response = {
-                    "status": "failed",
-                    "reason": 'Required attribute "ms" was not provided',
-                }
-                return web.json_response(data=response, status=400)
-            self._ledfx.loop.call_later(
-                ms, self._ledfx.scenes.activate, scene_id
-            )
-            response = {
-                "status": "success",
-                "payload": {
-                    "type": "info",
-                    "message": f"Activated scene {scene['name']}",
-                },
-            }
-            return web.json_response(data=response, status=200)
-
-        if action == "activate":
-            for virtual in self._ledfx.virtuals.values():
-                # Check virtual is in scene, make no changes if it isn't
-                if virtual.id not in scene["virtuals"].keys():
-                    # _LOGGER.info(
-                    #     ("virtual with id {} has no data in scene {}").format(
-                    #         virtual.id, scene_id
-                    #     )
-                    # )
-                    continue
-
-                # Set effect of virtual to that saved in the scene,
-                # clear active effect of virtual if no effect in scene
-                if scene["virtuals"][virtual.id]:
-                    # Create the effect and add it to the virtual
-                    effect = self._ledfx.effects.create(
-                        ledfx=self._ledfx,
-                        type=scene["virtuals"][virtual.id]["type"],
-                        config=scene["virtuals"][virtual.id]["config"],
-                    )
-                    virtual.set_effect(effect)
-                else:
-                    virtual.clear_effect()
-
-            self._ledfx.events.fire_event(SceneActivatedEvent(scene_id))
-            response = {
-                "status": "success",
-                "payload": {
-                    "type": "info",
-                    "message": f"Activated scene {scene['name']}",
-                },
-            }
-
-        elif action == "deactivate":
-            for virtual in self._ledfx.virtuals.values():
-                # Check virtual is in scene, make no changes if it isn't
-                if virtual.id not in scene["virtuals"].keys():
-                    _LOGGER.info(
-                        ("virtual with id {} has no data in scene {}").format(
-                            virtual.id, scene_id
-                        )
-                    )
-                    continue
-
-                # Clear the effect of virtual,
-                if scene["virtuals"][virtual.id]:
-                    virtual.clear_effect()
-
-            response = {
-                "status": "success",
-                "payload": {
-                    "type": "info",
-                    "message": f"Deactivated scene {scene['name']}",
-                },
-            }
-
-        elif action == "rename":
-            name = data.get("name")
-            if name is None:
-                response = {
-                    "status": "failed",
-                    "reason": 'Required attribute "name" was not provided',
-                }
-                return web.json_response(data=response, status=400)
-
-            # Update and save config
-            self._ledfx.config["scenes"][scene_id]["name"] = name
-            save_config(
-                config=self._ledfx.config,
-                config_dir=self._ledfx.config_dir,
-            )
-
-            response = {
-                "status": "success",
-                "payload": {
-                    "type": "info",
-                    "message": f"Renamed scene to {name}",
-                },
-            }
-        return web.json_response(data=response, status=200)
+    async def put_action_rename(self, scene_id, data):
+        new_name = data.get("name")
+        if not new_name:
+            raise Exception("No new name for the scene provided")
+        self._ledfx.scenes.rename(scene_id, new_name)
+        return f"Renamed scene to {new_name}"    
 
     async def post(self, request) -> web.Response:
         """Save current effects of virtuals as a scene"""
-        try:
-            data = await request.json()
-        except JSONDecodeError:
-            response = {
-                "status": "failed",
-                "reason": "JSON Decoding failed",
-            }
-            return web.json_response(data=response, status=400)
+        self.wrapped_request(self.post_action, request)
+        
+    async def post_action(self, request):
+        data = await request.json()
 
-        scene_name = data.get("name")
-        scene_tags = data.get("scene_tags")
-        scene_puturl = data.get("scene_puturl")
-        scene_payload = data.get("scene_payload")
-        scene_midiactivate = data.get("scene_midiactivate")
-        scene_image = data.get("scene_image")
-        if scene_image is None:
-            scene_image = "Wallpaper"
-        if scene_name is None:
-            response = {
-                "status": "failed",
-                "reason": 'Required attribute "scene_name" was not provided',
-            }
-            return web.json_response(data=response, status=400)
-
-        scene_id = generate_id(scene_name)
-
+        copied_keys = {
+            "name": {'required': True}, 
+            "scene_tags": None, 
+            "scene_puturl": None, 
+            "scene_payload": None, 
+            "scene_midiactivate": None, 
+            "scene_image": {'default': 'Wallpaper'}
+        }
+        
         scene_config = {}
-        scene_config["name"] = scene_name
-        scene_config["virtuals"] = {}
-        scene_config["scene_image"] = scene_image
-        scene_config["scene_puturl"] = scene_puturl
-        scene_config["scene_tags"] = scene_tags
-        scene_config["scene_payload"] = scene_payload
-        scene_config["scene_midiactivate"] = scene_midiactivate
+        
+        for key, cfg in copied_keys.items():
+            if key in data:
+                scene_config[key] = data[key]
+            elif cfg.get('default'):
+                scene_config[key] = cfg['default']
+            elif cfg.get('required'):
+                raise Exception(f'Parameter {key} needs to be set')
 
-        if "virtuals" not in data.keys():
+        scene_id = generate_id(scene_config['name'])
+
+        if 'virtuals' not in data:
             for virtual in self._ledfx.virtuals.values():
                 effect = {}
                 if virtual.active_effect:
@@ -253,25 +150,14 @@ class ScenesEndpoint(RestEndpoint):
                 scene_config["virtuals"][virtual.id] = effect
         else:
             virtuals = data.get("virtuals")
-
-            for virtualid in virtuals:
-                virtual = data.get("virtuals")[virtualid]
-                if bool(virtual):
-                    effect = {}
-                    effect["type"] = virtual["type"]
-                    effect["config"] = virtual["config"]
-                    scene_config["virtuals"][virtualid] = effect
-
-        # Update the scene if it already exists, else create it
-        self._ledfx.config["scenes"][scene_id] = scene_config
-
-        save_config(
-            config=self._ledfx.config,
-            config_dir=self._ledfx.config_dir,
-        )
-
-        response = {
+            for vid, vdata in virtuals.items():
+                scene_config['virtuals'][vid] = {
+                    'type': vdata['type'],
+                    'config': vdata['config']
+                }
+        
+        self._ledfx.scenes.update(scene_id, scene_config)
+        return {
             "status": "success",
             "scene": {"id": scene_id, "config": scene_config},
         }
-        return web.json_response(data=response, status=200)

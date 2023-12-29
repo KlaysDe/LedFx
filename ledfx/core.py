@@ -30,7 +30,7 @@ from ledfx.events import (
 from ledfx.http_manager import HttpServer
 from ledfx.integrations import Integrations
 from ledfx.presets import ledfx_presets
-from ledfx.scenes import Scenes
+from ledfx.scenes import SceneManagerV2
 from ledfx.utils import (
     RollingQueueHandler,
     UserDefaultCollection,
@@ -246,7 +246,7 @@ class LedFxCore:
         self.effects = Effects(self)
         self.virtuals = Virtuals(self)
         self.integrations = Integrations(self)
-        self.scenes = Scenes(self)
+        self.scenes = SceneManagerV2(self)
         self.colors = UserDefaultCollection(
             self,
             "Colors",

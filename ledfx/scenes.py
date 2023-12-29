@@ -10,21 +10,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class Scenes:
-    """Scenes manager"""
-
-    # Interfaces directly with config - no real need to create Scene objects.
-
-    def __init__(self, ledfx):
+    def __init__(self, ledfx) -> None:
         self._ledfx = ledfx
-        self._scenes = self._ledfx.config["scenes"]
-
+        self._scenes : dict = self._ledfx.config['scenes']
+        
         def virtuals_validator(virtual_ids):
             return list(
                 virtual_id
                 for virtual_id in virtual_ids
                 if self._ledfx.virtuals.get(virtual_id)
             )
-
+            
         self.SCENE_SCHEMA = vol.Schema(
             {
                 vol.Required("name", description="Name of the scene"): str,
@@ -55,18 +51,30 @@ class Scenes:
                 ): virtuals_validator,
             }
         )
-
-    def save_to_config(self):
+        pass
+    
+    def __iter__(self):
+        return iter(self._scenes)
+    
+    def __save(self):
         self._ledfx.config["scenes"] = self._scenes
         save_config(
             config=self._ledfx.config,
             config_dir=self._ledfx.config_dir,
         )
-
-    def create_from_config(self, config):
-        # maybe use this to sanitise scenes on startup or smth
         pass
-
+    
+    def values(self):
+        return self._scenes.values()
+    
+    def get(self):
+        return self._scenes
+    
+    def get(self, scene_id):
+        if scene_id in self._scenes:
+            return self._scenes[scene_id]
+        raise Exception(f"Scene with id {scene_id} not found")
+    
     def create(self, scene_config, scene_id=None):
         """Creates a scene of current effects of specified virtuals if no ID given, else updates one with matching id"""
         _LOGGER.info("New Scene Created!")
@@ -89,8 +97,15 @@ class Scenes:
         # Update the scene if it already exists, else create it
         self._scenes[scene_id] = scene_config
         self._ledfx.events.fire_event(SceneCreatedEvent(scene_id))
-        self.save_to_config()
-
+        self.__save()
+        
+    def destroy(self, scene_id):
+        if scene_id not in self._scenes:
+            raise Exception(f'Scene with id {scene_id} not found')
+        del self._scenes[scene_id]
+        self._ledfx.events.fire_event(SceneDeletedEvent(scene_id))
+        self.__save()
+    
     def activate(self, scene_id):
         """Activate a scene"""
         scene = self.get(scene_id)
@@ -117,20 +132,24 @@ class Scenes:
             else:
                 virtual.clear_effect()
         self._ledfx.events.fire_event(SceneActivatedEvent(scene_id))
-
-    def destroy(self, scene_id):
-        """Deletes a scene"""
-
-        if not self._scenes.pop(scene_id, None):
-            _LOGGER.error("Cannot delete non-existent scene id: {scene_id}")
-        self._ledfx.events.fire_event(SceneDeletedEvent(scene_id))
-        self.save_to_config()
-
-    def __iter__(self):
-        return iter(self._scenes)
-
-    def values(self):
-        return self._scenes.values()
-
-    def get(self, *args):
-        return self._scenes.get(*args)
+        pass
+    
+    def activate_in(self, scene_id, delay_ms):
+        self._ledfx.loop.call_later(
+            delay_ms, self.activate, scene_id
+        )
+    
+    def deactivate(self, scene_id):
+        scene = self.get(scene_id)
+        for virtual in scene:
+            virtual.clear_effect()
+    
+    def rename(self, old_id, new_id):
+        scene = self.get(old_id)
+        scene['name'] = new_id
+        self.__save()
+    
+    def update(self, scene_id, scene_definition):
+        self._scenes[scene_id] = scene_definition
+        self.__save()
+        pass
