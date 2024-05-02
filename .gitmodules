@@ -1,0 +1,3 @@
+[submodule "ledfx/integrations/klays-hass-mqtt"]
+	path = ledfx/integrations/klays-hass-mqtt
+	url = https://git.chmiel-it.de/sebastian.chmiel/klays-hass-mqtt.git
